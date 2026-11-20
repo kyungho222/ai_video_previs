@@ -1,0 +1,27 @@
+services:
+  video:
+    build: .
+    healthcheck:
+      disable: true
+    init: true
+    restart: unless-stopped
+    env_file:
+      - ${SERVICE_ENV_FILE:-.env}
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${VIDEO_PORT:-9000}:9000"
+    volumes:
+      - video-data:/app/ai_video/runtime/data
+      - previs-auth:/app/ai_video/jutsu_auth/data
+      - previs-results:/app/ai_video/runtime/recovered
+      - previs-archive:/app/ai_video/runtime/archive
+      - wan-results:/app/ai_video/runtime/wan
+      - wan-inputs:/app/ai_video/runtime/wan-inputs
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+volumes:
+  video-data:
+  previs-auth:
+  previs-results:
+  previs-archive:
+  wan-results:
+  wan-inputs:

@@ -1,0 +1,22 @@
+services:
+  video:
+    build: .
+    healthcheck:
+      disable: true
+    init: true
+    restart: unless-stopped
+    environment:
+      PREVIS_STORAGE_MODE: server
+    env_file:
+      - ${SERVICE_ENV_FILE:-.env}
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${VIDEO_PORT:-9000}:9000"
+    volumes:
+      - type: bind
+        source: ./ai_video/runtime
+        target: /app/ai_video/runtime
+      - previs-auth:/app/ai_video/jutsu_auth/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+volumes:
+  previs-auth:

@@ -1,0 +1,19 @@
+.env
+.env.*
+!.env.example
+/local_support/
+/start-local.ps1
+**/runtime/
+**/data/
+**/local-state/
+**/__pycache__/
+*.log
+*.sqlite3
+.venv/
+
+# Development, backups, and unused reference folders
+/# backup/
+/tests/
+**/.pytest_cache/
+/ai_video/refactor_whoami_final/
+/ai_video/video_generate/

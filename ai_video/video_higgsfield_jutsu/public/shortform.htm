@@ -1,0 +1,436 @@
+<? include_once './presentation/init.php'; ?>
+
+<!-- title 바 시작 //-->
+<table width="99%" cellpadding=0 cellspacing=0 border=0>
+<tr><td height=12 bgcolor="#FFFFFF"><img src="<?=$ASAPRO_URL;?>/image/b.gif" width=1 height=1></td></tr>
+<tr><td height=1 bgcolor="#D9D9D9"><img src="<?=$ASAPRO_URL;?>/image/b.gif" width=1 height=1></td></tr>
+<tr><td height=5 bgcolor="#ffffff"><img src="<?=$ASAPRO_URL;?>/image/b.gif" width=1 height=3></td></tr>
+<tr><td height=13>
+<? include "./topmenu_list7.htm"; ?>
+<tr><td height=2 bgcolor="#F7F7F7"><img src="<?=$ASAPRO_URL;?>/image/b.gif" width=1 height=2></td></tr>
+<tr><td height=2 bgcolor="#EAEAEA"><img src="<?=$ASAPRO_URL;?>/image/b.gif" width=1 height=2></td></tr>
+<tr><td height=1 bgcolor="#FFFFFF"><img src="<?=$ASAPRO_URL;?>/image/b.gif" width=1 height=1></td></tr>
+<tr><td height=1 bgcolor="#B6B6B6"><img src="<?=$ASAPRO_URL;?>/image/b.gif" width=1 height=1></td></tr>
+<tr><td height=5><img src="<?=$ASAPRO_URL;?>/image/d.gif"></td></tr>
+<tr><td height=6 bgcolor="#FFFFFF"><img src="<?=$ASAPRO_URL;?>/image/b.gif" width=1 height=1></td></tr>
+</table>
+
+	<link rel="stylesheet" href="./css/style.css">
+	<link rel="stylesheet" href="./video_generate.css">
+	<link rel="stylesheet" href="./presentation_multi.css?v=<?=filemtime('./presentation_multi.css');?>">
+
+<style>
+	.image-mode-tabs{max-width: 30%;}
+	.image-bar{max-width: 70%;}
+	.mode-field{flex-direction: unset;flex-wrap: wrap;gap: 25px;}
+	.mode-field.prompt-field{gap: 10px;}
+	.draft-section-type-select{display: none;}
+	.draft-title-row{flex: 1 0 auto;}
+	.draft-sections-toolbar{width: 100%;}
+	.draft-sections-editor{width: 100%;padding-right: 0;scrollbar-gutter: unset;}
+	.buttons-area{margin-top: 10px;display: flex;justify-content: space-between;padding: 0 10px;box-sizing: border-box;}
+	.buttons-area button{align-items: center;background: #007bff;border: none;border-radius: 14px;color: #fff;display: flex;font-size: 16px;font-weight: 600;gap: 8px;justify-content: center;padding: 12px 15px;transition: transform 0.2s ease, box-shadow 0.2s ease;cursor: pointer;}
+	.step-box{cursor: context-menu;}
+	.mode-field input[type="text"], .mode-field select, .mode-field textarea{padding: 5px 8px 5px 8px;width:100%;}
+</style>
+<!-- chat E -->
+<div class="gwiChat-all">
+	<!-- S -->
+	<div id="appHead" class="title-bar clearfix">
+		<h3 class="h3-title">
+			<label for="chat_bot">AI봇</label>
+			<?php echo $chatbotSelectBox?>
+		</h3>
+
+		<h3 class="h3-title">
+			<label>내용 모델</label>
+			<div id="aiChatModelSelectorContainer" class="custom-ai-selector">
+				<div class="selected-ai-option">
+					<span class="model-name">로딩 중...</span>
+				</div>
+				<ul class="ai-options-list"></ul>
+			</div>
+		</h3>
+
+		<h3 class="h3-title">
+			<label>프리비즈 모델</label>
+			<div id="aiPrevisModelSelectorContainer" class="custom-ai-selector">
+				<div class="selected-ai-option">
+					<span class="model-name">힉스필드</span>
+				</div>
+				<ul class="ai-options-list"></ul>
+			</div>
+		</h3>
+
+		<h3 class="h3-title">
+			<label>동영상 모델</label>
+			<div id="aiVideoModelSelectorContainer" class="custom-ai-selector">
+				<div class="selected-ai-option">
+					<span class="model-name">모델 로딩 중...</span>
+				</div>
+				<ul class="ai-options-list"></ul>
+			</div>
+		</h3>
+
+	</div>
+
+<div class="container">
+	<h3 class="h3-titles">숏폼 생성 <a href="#n" id="refreshLink"><img src="/~AsaProgram/module/member/image/index/main_table_icon.gif" border="0" title="새로고침" class="refresh-icon"> <span>새로 고침</span></a>
+	</h3>
+		<div class="step-guide">
+			<div class="step-box-group">
+				<button type="button" class="step-box active" id="write_box">1. 시나리오 작성</button>
+				<div class="step-box" id="previs_box">2. 프리비즈 생성</div>
+				<div class="step-box" id="video_box">3. 숏폼 생성</div>
+			</div>
+		</div>
+
+	<!-- 1 S: 시나리오 작성-->
+	<div id="write_stage" class="image-create clearfix">
+		<div class="image-mode-tabs">
+			<div class="tab-panels">
+				<div class="image-setting tab-panel" data-mode="image">
+					<div class="mode-card image-step-panel">
+						<div class="image-prompt-block">
+							<div class="image-prompt-with-fill">
+								<div class="image-prompt-rows">
+									<div class="mode-field mode-field--inline-row">
+										<label class="mode-label">제목</label>
+										<div class="draft-title-row">
+											<input id="titleInput" type="text" placeholder="제목을 입력하세요." style="width: 100%;">
+										</div>
+									</div>
+									<div class="mode-field mode-field--inline-row">
+										<label class="mode-label">내용</label>
+										<div class="draft-title-row">
+											<textarea id="summaryInput" class="prompt-field-surface prompt-field-surface--short" placeholder="핵심 내용을 입력하세요." rows="1" style="min-height: 41px;width: 100%;"></textarea>
+										</div>
+									</div>
+								</div>
+							</div>
+							<div class="draft-options-collapsed-line" aria-hidden="true"></div>
+						</div>
+						<div class="mode-actions">
+							<button id="writePlayBtn" data-field="generateBtn" >
+								시나리오 생성
+							</button>
+						</div>
+						<div class="mode-field prompt-field">
+							<div class="draft-sections-toolbar">
+								<label for="promptInputImage" class="mode-label">시나리오 *</label>
+								<button type="button" id="addDraftSectionBtn" class="draft-section-add-btn" aria-label="섹션 추가">+</button>
+							</div>
+							<div  class="draft-sections-editor"></div>
+						</div>
+						<div class="mode-actions">
+							<button id="createPrevisBtn" data-field="generateBtn" >
+								이 시나리오로 영상 생성하기
+							</button>
+						</div>
+					</div>
+				</div>
+			</div>
+		</div>
+		<div class="image-bar">
+			<div class="image-step-panel image-right-panel">
+				<div id="image-box">
+
+				</div>
+				<div class="buttons-area">
+					<button class="page-prev">&lt; 이전 단계</button>
+					<button id="writeNextBtn" class="page-next">다음 단계 &gt;</button>
+				</div>
+			</div>
+		</div>
+	</div>
+	<!-- 1 E -->
+
+	<!-- 2 S : 프리비즈 생성 단계 -->
+	<div id="previs_stage" class="image-create clearfix">
+		<div class="image-mode-tabs">
+			<div class="tab-panels">
+				<div class="image-setting tab-panel" data-mode="image">
+					<!-- 내용 -->
+					<div class="mode-card image-step-panel">
+						<div class="mode-field mode-field--inline-row" style="margin-bottom: 15px; display: flex;">
+							<label class="mode-label" style="width: 80px;">화면 비율 *</label>
+							<div class="draft-title-row" style="flex: 1;">
+								<select class="prompt-field-surface" style=" border-radius: 4px;">
+									<option value="9:16">9:16</option>
+									<option value="16:9">16:9</option>
+									<option value="1:1">1:1</option>
+								</select>
+							</div>
+						</div>
+						<div class="mode-field mode-field--inline-row" style="margin-bottom: 15px; display: flex;">
+							<label class="mode-label" style="width: 80px;">영상 길이 *</label>
+							<div class="draft-title-row" style="flex: 1;">
+								<select class="prompt-field-surface" style=" border-radius: 4px;">
+									<option value="15">15 초</option>
+									<option value="30">30 초</option>
+									<option value="60">60 초</option>
+								</select>
+							</div>
+						</div>
+						<div class="mode-field mode-field--inline-row prompt-field" style="margin-bottom: 20px; display: flex;">
+							<label class="mode-label" style="width: 80px;">요청사항</label>
+							<div class="draft-title-row" style="flex: 1;">
+								<textarea class="prompt-field-surface" placeholder="카메라 움직임, 인물 동선, 장면 구도를 자유롭게 적어주세요." rows="3" style=" border-radius: 4px; resize: vertical;"></textarea>
+							</div>
+						</div>
+						
+						<div class="mode-actions" style="margin-top: 20px;">
+							<button id="createVideoBtn" type="button" style="width:100%; padding:15px; background:#007bff; color:white; border:none; border-radius:8px; font-weight:bold; cursor:pointer;">프리비즈 생성</button>
+						</div>
+					</div>
+					<!-- 내용 -->
+				</div>
+			</div>
+
+		</div>
+		<div class="image-bar">
+			<div class="image-step-panel image-right-panel" style="display: flex; flex-direction: column; min-height: 400px;">
+				<div class="preview-placeholder" id="preview-placeholder-step2" style="flex:1; border:1px solid #e0e0e0; border-radius:12px; background:#fafafa; display:flex; position:relative;">
+					<div style="position:absolute; top:15px; right:15px; background:#fff; border:1px solid #ddd; border-radius:4px; width:32px; height:32px; display:flex; align-items:center; justify-content:center; cursor:pointer; z-index:10;" onclick="openFullscreen('preview-placeholder-step2')">⤢</div>
+				</div>
+				<div class="buttons-area">
+					<button id="previsPrevBtn" class="page-prev" style="background: white; color: #007bff; border: 1px solid #007bff; border-radius: 14px; padding: 12px 25px; cursor: pointer;">&lt; 이전 단계</button>
+					<button id="previsNextBtn" class="page-next" style="background: #007bff; color: white; border: none; border-radius: 14px; padding: 12px 25px; cursor: pointer;">다음 단계 &gt;</button>
+				</div>
+			</div>
+		</div>
+	</div>
+	<!-- 2 E -->
+
+	<!-- 3 S : 숏폼 생성 단계 -->
+	<div id="video_stage" class="image-create clearfix">
+		<div class="image-mode-tabs">
+			<div class="tab-panels">
+				<div class="image-setting tab-panel" data-mode="image">
+					<!-- 내용 -->
+					<div class="mode-card image-step-panel">
+						<div class="mode-field mode-field--inline-row" style="margin-bottom: 15px; display: flex;">
+							<label class="mode-label" style="width: 80px;">캐릭터 *</label>
+							<div class="draft-title-row" style="flex: 1;">
+								<select class="prompt-field-surface" style=" border-radius: 4px;">
+									<option value="dal">달이</option>
+									<option value="other">기타 캐릭터</option>
+								</select>
+							</div>
+						</div>
+						<div class="mode-field mode-field--inline-row" style="margin-bottom: 15px; display: flex;">
+							<label class="mode-label" style="width: 80px;">배경 *</label>
+							<div class="draft-title-row" style="flex: 1;">
+								<select class="prompt-field-surface" style=" border-radius: 4px;">
+									<option value="cyberpunk">사이버펑크도시</option>
+									<option value="forest">숲속</option>
+								</select>
+							</div>
+						</div>
+						<div class="mode-field mode-field--inline-row" style="margin-bottom: 15px; display: flex;">
+							<label class="mode-label" style="width: 80px;">물체 *</label>
+							<div class="draft-title-row" style="flex: 1;">
+								<select class="prompt-field-surface" style=" border-radius: 4px;">
+									<option value="comm,car">통신기, 자동차</option>
+									<option value="sword">검</option>
+								</select>
+							</div>
+						</div>
+						
+						<div class="mode-actions" style="margin-top: 20px; display: flex; gap: 10px;">
+							<button type="button" onclick="openPreviewModal()" style="flex:1; padding:15px; background:white; color:#007bff; border:1px solid #007bff; border-radius:8px; font-weight:bold; cursor:pointer;">미리보기</button>
+							<button type="button" style="flex:2; padding:15px; background:#007bff; color:white; border:none; border-radius:8px; font-weight:bold; cursor:pointer;">숏폼 생성</button>
+						</div>
+					</div>
+					<!-- 내용 -->
+
+				</div>
+			</div>
+		</div>
+		<div class="image-bar">
+			<div class="image-step-panel image-right-panel" style="display: flex; flex-direction: column; min-height: 400px;">
+				<div style="flex:1; border:1px solid #e0e0e0; border-radius:12px; background:#fafafa; padding: 15px; display:flex; flex-direction: column; position:relative; box-sizing: border-box;">
+
+					<div style="position:absolute; top:15px; right:15px; background:#fff; border:1px solid #ddd; border-radius:4px; width:32px; height:32px; display:flex; align-items:center; justify-content:center; cursor:pointer; z-index:10;" onclick="openFullscreen('step3-video-container')">⤢</div>
+
+					<div id="step3-video-container" style="flex:1; background:#000; border-radius:8px; display:flex; align-items:center; justify-content:center; overflow:hidden;">
+						<video controls style="width:100%; max-height:100%;">
+							<source src="https://www.w3schools.com/html/mov_bbb.mp4" type="video/mp4">
+						</video>
+					</div>
+					
+					<div style="display:flex; gap:10px; margin-top:15px;">
+						<button type="button" style="flex:1; padding:12px; background:#007bff; color:white; border:none; border-radius:8px; font-weight:bold; cursor:pointer;">숏폼 다운로드</button>
+						<button type="button" style="background:white; color:#007bff; border:1px solid #007bff; border-radius:8px; font-weight:bold; cursor:pointer; padding: 0 30px;">GIF 다운로드</button>
+					</div>
+				</div>
+				<div class="buttons-area">
+					<button id="videoPrevBtn" class="page-prev" style="background: white; color: #007bff; border: 1px solid #007bff; border-radius: 14px; padding: 12px 25px; cursor: pointer;">&lt; 이전 단계</button>
+				</div>
+			</div>
+		</div>
+	</div>
+	<!-- 3 E -->
+</div>
+
+<div id="presentation-editor-root"></div>
+
+<div id="previewModalOverlay" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 9999; justify-content: center; align-items: center;">
+	<div style="background: #fff; width: 800px; border-radius: 12px; padding: 30px; box-shadow: 0 4px 20px rgba(0,0,0,0.15);">
+		<div style="display: flex; justify-content: space-between; margin-bottom: 20px;">
+			<h3 style="margin: 0; font-size: 18px; font-weight: bold;">미리보기</h3>
+			<button onclick="closePreviewModal()" style="background: none; border: none; font-size: 24px; cursor: pointer; color: #666;">&times;</button>
+		</div>
+		<div style="display: flex; gap: 20px;">
+			<div style="flex:1; border:1px solid #e0e0e0; border-radius:8px; padding:15px; text-align:center;">
+				<div style="font-weight:bold; margin-bottom:10px; font-size:14px;">캐릭터</div>
+				<div style="width:100%; height:180px; background:#f0f4f8; border-radius:6px; display:flex; align-items:center; justify-content:center; color:#999; margin-bottom:10px;">이미지</div>
+				<div style="font-size:13px; color:#333;">달이</div>
+			</div>
+			<div style="flex:1; border:1px solid #e0e0e0; border-radius:8px; padding:15px; text-align:center;">
+				<div style="font-weight:bold; margin-bottom:10px; font-size:14px;">배경</div>
+				<div style="width:100%; height:180px; background:#f0f4f8; border-radius:6px; display:flex; align-items:center; justify-content:center; color:#999; margin-bottom:10px;">이미지</div>
+				<div style="font-size:13px; color:#333;">사이버펑크도시</div>
+			</div>
+			<div style="flex:1; border:1px solid #e0e0e0; border-radius:8px; padding:15px; text-align:center;">
+				<div style="font-weight:bold; margin-bottom:10px; font-size:14px;">물체</div>
+				<div style="width:100%; height:85px; background:#f0f4f8; border-radius:6px; display:flex; align-items:center; justify-content:center; color:#999; margin-bottom:10px;">이미지</div>
+				<div style="width:100%; height:85px; background:#f0f4f8; border-radius:6px; display:flex; align-items:center; justify-content:center; color:#999; margin-bottom:10px;">이미지</div>
+				<div style="font-size:13px; color:#333;">통신기, 자동차</div>
+			</div>
+		</div>
+		<div style="text-align:center; margin-top:20px;">
+			<button onclick="closePreviewModal()" style="width: 200px; padding: 12px; background: white; color: #007bff; border: 1px solid #007bff; border-radius: 8px; font-weight: bold; cursor: pointer;">닫기</button>
+		</div>
+	</div>
+</div>
+
+<div id="fullscreenOverlay" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); z-index: 10000; justify-content: center; align-items: center; box-sizing: border-box;">
+    <button onclick="closeFullscreen()" style="position: absolute; top: 20px; right: 20px; background: #fff; border: none; border-radius: 6px; width: 24px; height: 24px; cursor: pointer; display: flex; align-items: center; justify-content: center; box-shadow: 0 2px 10px rgba(0,0,0,0.2);z-index: 999999;" title="축소하기 (还原)" >
+        <svg viewBox="0 0 24 24" width="24" height="24" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" style="color: #333;">
+            <polyline points="4 14 10 14 10 20"></polyline>
+            <polyline points="20 10 14 10 14 4"></polyline>
+            <line x1="14" y1="10" x2="21" y2="3"></line>
+            <line x1="3" y1="21" x2="10" y2="14"></line>
+        </svg>
+    </button>
+
+    <div id="fullscreenContent" style="width: 100%; height: 100%;  background: #fff; display: flex; align-items: center; justify-content: center; overflow: hidden; box-shadow: 0 10px 30px rgba(0,0,0,0.5);">
+    </div>
+</div>
+	<!-- 加载基本公共JS -->
+	<script language="javascript" src="./js/ai.js"></script>
+	<script src="./js/download_utils.js?v=<?=filemtime('./js/download_utils.js');?>"></script>
+	<script src="/lib/js/axios-1.7.9.min.js"></script>
+	<script src="<?=$ai_model_base_url?>ai_model_<?=$last_uuid;?>.js?v=<?=time();?>"></script>
+	<script>
+		const requestInstance = axios.create();
+		requestInstance.interceptors.response.use(
+				function (response) {
+					if (response.data?.success === false) {
+						return Promise.reject(response.data);
+					}
+					return response;
+				},
+				function (error) {
+					return Promise.reject(error);
+				}
+		);
+	</script>
+
+	<!-- 全屏功能 -->
+<script>
+    function openFullscreen(targetId) {
+        const overlay = document.getElementById('fullscreenOverlay');
+        const contentBox = document.getElementById('fullscreenContent');
+        const targetNode = document.getElementById(targetId);
+
+        if (!targetNode) return;
+
+        const clonedNode = targetNode.cloneNode(true);
+
+        const innerBtns = clonedNode.querySelectorAll('[onclick^="openFullscreen"]');
+        innerBtns.forEach(btn => {
+            btn.style.display = 'none'; 
+        });
+
+        contentBox.innerHTML = '';
+
+        clonedNode.style.width = '100%';
+        clonedNode.style.height = '100%';
+        clonedNode.style.flex = 'unset';
+        clonedNode.style.border = 'none';
+        clonedNode.style.borderRadius = '0';
+        clonedNode.style.background = '#fff';
+
+        contentBox.appendChild(clonedNode);
+
+        overlay.style.display = 'flex';
+    }
+
+    function closeFullscreen() {
+        const overlay = document.getElementById('fullscreenOverlay');
+        const contentBox = document.getElementById('fullscreenContent');
+        
+        overlay.style.display = 'none';
+
+        setTimeout(() => {
+            contentBox.innerHTML = ''; 
+        }, 200); 
+    }
+
+    document.getElementById('fullscreenOverlay').addEventListener('click', function(e) {
+        if (e.target === this) {
+            closeFullscreen();
+        }
+    });
+</script>
+	<!-- 预览弹窗控制 -->
+<script>
+	function openPreviewModal() {
+		document.getElementById('previewModalOverlay').style.display = 'flex';
+	}
+
+	function closePreviewModal() {
+		document.getElementById('previewModalOverlay').style.display = 'none';
+	}
+</script>
+
+<script src="./presentation/shared/draftOptionRow.js?v=<?=filemtime('./presentation/shared/draftOptionRow.js');?>"></script>
+<script src="./presentation/ui/draftDetails.js?v=<?=filemtime('./presentation/ui/draftDetails.js');?>"></script>
+<script src="./presentation/ui/download-menu.js?v=<?=filemtime('./presentation/ui/download-menu.js');?>"></script>
+<script src="./presentation/draft/sectionManager.js?v=<?=filemtime('./presentation/draft/sectionManager.js');?>"></script> <!-- 시나리오 核心 -->
+<script src="./presentation/draft/generationStore.js?v=<?=filemtime('./presentation/draft/generationStore.js');?>"></script>
+<script src="./presentation/shared/presentationApiManager.js?v=<?=filemtime('./presentation/shared/presentationApiManager.js');?>"></script>
+<script src="./presentation/results/streamResultHandler.js?v=<?=filemtime('./presentation/results/streamResultHandler.js');?>"></script>
+<script src="./presentation/shared/presentationApi.js?v=<?=filemtime('./presentation/shared/presentationApi.js');?>"></script>
+<script src="./presentation/draft/generateDraft.js?v=<?=filemtime('./presentation/draft/generateDraft.js');?>"></script>
+<script src="./presentation/process/generateProcess.js?v=<?=filemtime('./presentation/process/generateProcess.js');?>"></script>
+<script src="./presentation/generate_presentation_v2.js?v=<?=filemtime('./presentation/generate_presentation_v2.js');?>"></script>
+	<!-- 项目本身私有js -->
+	<script>
+		window.SHORTFORM_PAGE_CONFIG = {
+			apiUrl: "<?php echo addslashes($api_url); ?>",
+			apiBase: "<?=addslashes($url1)?>",
+			imageApiBase: "<?=addslashes($base_url)?>",
+			domainId: window.location.origin,
+			dbName: "<?=addslashes($asapro2_db_info['db_name'])?>",
+			chatBotId: "<?=addslashes($chat_bot)?>",
+			memberId: "<?=addslashes($member_info['id'])?>",
+			memberName: "<?=addslashes($member_info['name'])?>",
+			writeAiPath: '/v1/previs/api/shortform/scenario',
+			getPreferredModelUrl: "./api/common/get_ai_model.php"
+		};
+	</script>
+	<script src="./shortform.js?v=<?=md5_file('./shortform.js');?>"></script>
+
+
+	<!-- E -->
+</div>
+
+<!-- chat E -->
+
+		</td></tr>
+<?
+include_once $_SERVER['DOCUMENT_ROOT']."/end.htm";
+?>

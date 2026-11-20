@@ -1,0 +1,164 @@
+{
+  "model_mappings": {
+    "gpt-6.1-terra": {
+      "api_model": "gpt-6.1-terra",
+      "provider": "openai",
+      "usage_model": "gpt-6.1-terra"
+    },
+    "gpt-4.1-mini": {
+      "api_model": "gpt-4.1-mini",
+      "provider": "openai",
+      "usage_model": "gpt-4.1-mini"
+    },
+    "qwen3.8-27b-fp8": {
+      "api_model": "Qwen/Qwen3.8-27B-FP8",
+      "usage_model": "qwen3.8-27b-fp8",
+      "provider": "qwen",
+      "api_base": "https://api-aipro.chatbaram.com/sllm/v2/v1",
+      "api_key_name": "local",
+      "use_completion_tokens": false,
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    },
+    "gpt-5.6-luna": {
+      "api_model": "gpt-5.6-luna",
+      "provider": "openai",
+      "use_completion_tokens": true,
+      "usage_model": "gpt-5.6-luna"
+    },
+    "gpt-5-chat-latest": {
+      "api_model": "gpt-5.1",
+      "use_completion_tokens": true,
+      "provider": "openai",
+      "description": "Chatty mapping: gpt-5.1",
+      "usage_model": "gpt-5.1"
+    },
+    "gpt-4.1": {
+      "api_model": "gpt-4.1",
+      "provider": "openai",
+      "description": "Chatty mapping: gpt-4.1",
+      "usage_model": "gpt-4.1"
+    },
+    "gpt-4o": {
+      "api_model": "gpt-4o",
+      "provider": "openai",
+      "description": "OpenAI GPT-4o",
+      "usage_model": "gpt-4o"
+    },
+    "gpt-4o-mini": {
+      "api_model": "gpt-4o-mini",
+      "provider": "openai",
+      "description": "OpenAI GPT-4o Mini",
+      "usage_model": "gpt-4o-mini"
+    },
+    "claude-sonnet-4": {
+      "api_model": "claude-sonnet-4-20250514",
+      "provider": "anthropic",
+      "description": "Chatty mapping: claude-sonnet-4-20250514",
+      "usage_model": "claude-sonnet-4"
+    },
+    "claude": {
+      "api_model": "claude-3-5-haiku-latest",
+      "provider": "anthropic",
+      "description": "Chatty mapping: claude-3-5-haiku-latest",
+      "usage_model": "claude-3-5-haiku-latest"
+    },
+    "deepseek": {
+      "api_model": "deepseek-chat",
+      "provider": "deepseek",
+      "description": "DeepSeek Chat",
+      "usage_model": "deepseek"
+    },
+    "gemini": {
+      "api_model": "gemini-2.5-flash",
+      "provider": "google",
+      "description": "Chatty mapping: gemini-2.5-flash",
+      "usage_model": "gemini-2.5-flash"
+    },
+    "gemini-2.0-flash-exp": {
+      "api_model": "gemini-2.0-flash-exp",
+      "provider": "google",
+      "description": "Google Gemini 2.0 Flash Experimental",
+      "usage_model": "gemini-2.0-flash-exp"
+    },
+    "mistral": {
+      "api_model": "mistral-large-latest",
+      "provider": "mistral",
+      "description": "Mistral Large 최신",
+      "usage_model": "mistral-large-latest"
+    },
+    "qwen": {
+      "api_model": "qwen3-max",
+      "provider": "qwen",
+      "description": "Chatty mapping: qwen3-max",
+      "usage_model": "qwen3-max",
+      "extra_body": {
+        "enable_thinking": false
+      }
+    },
+    "qwen-max": {
+      "api_model": "qwen-max",
+      "provider": "qwen",
+      "description": "Alibaba Qwen Max",
+      "usage_model": "qwen-max"
+    },
+    "grok": {
+      "api_model": "grok-3-fast-beta",
+      "provider": "xai",
+      "description": "Chatty mapping: grok-3-fast-beta",
+      "usage_model": "grok-3-fast-beta"
+    },
+    "grok-4": {
+      "api_model": "grok-4-0709",
+      "provider": "xai",
+      "description": "Chatty mapping: grok-4-0709",
+      "usage_model": "grok-4"
+    },
+    "grok-beta": {
+      "api_model": "grok-beta",
+      "provider": "xai",
+      "description": "xAI Grok Beta",
+      "usage_model": "grok-beta"
+    },
+    "kimi": {
+      "api_model": "kimi-k2-0905-preview",
+      "provider": "moonshot",
+      "description": "Chatty mapping: kimi-k2-0905-preview",
+      "usage_model": "kimi-k2-0905-preview"
+    },
+    "moonshot-v1-8k": {
+      "api_model": "moonshot-v1-8k",
+      "provider": "moonshot",
+      "description": "Moonshot v1 8K",
+      "usage_model": "moonshot-v1-8k"
+    },
+    "gemma4-26b-a4b-it": {
+      "api_model": "google/gemma-4-26B-A4B-it",
+      "usage_model": "gemma4-26b-a4b-it",
+      "provider": "gemma",
+      "api_base": "https://api-aipro.chatbaram.com/sllm/v1",
+      "api_key_name": "local",
+      "use_completion_tokens": false
+    }
+  },
+  "disabled_model_mappings": {
+    "gemma": {
+      "api_model": "gemma-3-27b-it",
+      "provider": "gemma",
+      "description": "Paused: requires self-hosted/OpenAI-compatible Gemma endpoint"
+    },
+    "gemma-26b": {
+      "api_model": "gemma-3-27b-it",
+      "provider": "gemma",
+      "description": "Paused: Google generateContent does not serve this model here"
+    },
+    "gemma-3-27b-it": {
+      "api_model": "gemma-3-27b-it",
+      "provider": "gemma",
+      "description": "Paused: Google generateContent does not serve this model here"
+    }
+  }
+}

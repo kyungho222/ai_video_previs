@@ -1,0 +1,255 @@
+<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>3D Jutsu Previs Console</title><style>
+:root{color-scheme:dark;font-family:system-ui,sans-serif;background:#10151e;color:#e9f0fb}*{box-sizing:border-box}body{margin:0;padding:12px}main{height:calc(100dvh - 24px);max-width:1500px;margin:auto;border:1px solid #344155;border-radius:14px;display:flex;flex-direction:column;overflow:hidden;background:#161d28}header{display:flex;justify-content:space-between;align-items:center;padding:22px 26px;border-bottom:1px solid #344155}small{color:#81a9ff;letter-spacing:2px;font-size:11px}h1{font-size:24px;margin:5px 0}a{color:#9cc4ff}#connect{border:1px solid #4675d6;border-radius:24px;padding:10px 16px;text-decoration:none;font-size:13px}#status{font-size:12px;padding:9px 26px;border-bottom:1px solid #344155;color:#adc0d9}.workspace{display:grid;grid-template-columns:64% 36%;flex:1;min-height:0}.chat{display:flex;flex-direction:column;min-height:0}h2{font-size:15px;margin:0;padding:17px 20px;border-bottom:1px solid #344155;display:flex;justify-content:space-between}h2 span{font-size:11px;color:#8597b3;font-weight:400}#messages{overflow:auto;flex:1;padding:20px;display:flex;flex-direction:column;gap:14px}.welcome{color:#91a1b8}.message{padding:14px 16px;border-radius:12px;background:#263247;max-width:93%;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.65}.user{align-self:flex-end;background:#315fc2}.error{background:#45242e;border-left:3px solid #ee718b}.pending{display:flex;align-items:center;gap:10px}.spinner{width:17px;height:17px;border:2px solid #7184a4;border-top-color:#fff;border-radius:50%;animation:spin 1s linear infinite;flex-shrink:0}@keyframes spin{to{transform:rotate(360deg)}}aside{display:grid;grid-template-rows:1fr 1fr;min-height:0;border-left:1px solid #344155}.logs,.debug{display:flex;flex-direction:column;min-height:0}#logs{padding:14px 20px;overflow:auto;display:flex;flex-direction:column;gap:9px}.log{font-size:13px;background:#202c3c;padding:12px;border-left:3px solid #719cff;overflow-wrap:anywhere}.log.error{border-color:#eb6c84;background:#41242c}.debug{border-top:1px solid #344155;background:#0d131d}nav{display:flex;gap:7px;padding:10px 15px;border-bottom:1px solid #344155}button,select{font:inherit;border:1px solid #536989;border-radius:8px;padding:10px;color:#eef5ff;background:#182438}button{cursor:pointer}button.active,#send{background:#315fc2}button:disabled{opacity:.5;cursor:wait}pre{overflow:auto;flex:1;font-size:12px;padding:14px;margin:0;white-space:pre-wrap;overflow-wrap:anywhere}form{display:flex;align-items:center;gap:10px;padding:15px 20px;border-top:1px solid #344155}textarea{flex:1;min-width:0;resize:none;border:1px solid #536989;border-radius:8px;padding:12px;color:#eef5ff;background:#0d131d;font:inherit}footer{font-size:11px;padding:0 20px 12px;color:#8293ae}video{display:block;max-width:100%;max-height:52dvh;margin:10px auto;background:#000;border-radius:8px}.downloads{display:flex;gap:16px;margin-top:10px}@media(max-width:760px){body{padding:0}main{height:100dvh;border-radius:0}.workspace{grid-template-columns:1fr;grid-template-rows:60% 40%}aside{grid-template-columns:1fr 1fr;grid-template-rows:1fr;border-top:1px solid #344155}header{padding:15px}h1{font-size:19px}form{flex-wrap:wrap;padding:10px}textarea{flex-basis:55%}h2 span{display:none}}
+
+.chat-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;border-bottom:1px solid #344155;flex-wrap:wrap;padding:12px 20px}.chat-heading h2{padding:0;border:0;gap:12px;align-items:center}.chat-actions{display:flex;gap:8px}.chat-actions button{font-size:13px;min-height:36px;padding:7px 12px;white-space:nowrap}.chat-actions #reset{border-color:#7799ce;background:#253c61}.chat-actions button:hover:enabled{background:#315fc2}.chat-actions button:focus-visible{outline:2px solid #9cc4ff;outline-offset:3px}
+
+.wan-open{display:block;margin-top:14px;border-color:#719cff;background:#253c61;font-size:14px}.wan-panel[hidden]{display:none}.wan-panel{display:grid;gap:12px;margin:14px 0 0;padding:16px;border:1px solid #536989;border-radius:10px;background:#182438;white-space:normal}.wan-panel label{display:grid;gap:6px;font-size:12px;color:#b8c9e1}.wan-panel textarea{width:100%;min-height:100px;font-size:13px;line-height:1.5}.wan-settings{display:flex;flex-wrap:wrap;gap:12px}.wan-settings label{flex:1;min-width:100px}.wan-settings input,.wan-settings select{width:100%;border:1px solid #536989;border-radius:8px;padding:9px;color:#eef5ff;background:#0d131d;font:inherit}.wan-help,.wan-feedback{margin:0;font-size:12px;line-height:1.6;color:#b8c9e1}.wan-submit{justify-self:start;background:#315fc2}.wan-result{border:1px solid #719cff}.wan-result small{letter-spacing:0}.downloads{flex-wrap:wrap}
+
+.wan-assets{min-width:0;margin:0;padding:14px;border:1px solid #536989;border-radius:10px;display:grid;gap:12px}.wan-assets legend{font-size:14px;font-weight:600;padding:0 6px;color:#eef5ff}.wan-asset-pickers{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px}.wan-asset-pickers label{min-width:0;padding:10px;border:1px dashed #536989;border-radius:8px;background:#0d1726}.wan-asset-input{width:100%;min-width:0;font-size:12px;color:#b8c9e1}.wan-asset-input::file-selector-button{padding:7px;margin:4px 6px 4px 0;border:1px solid #536989;border-radius:6px;background:#253c61;color:#eef5ff;cursor:pointer}.wan-asset-previews{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:10px}.wan-asset-tile{display:grid;gap:6px;min-width:0;padding:8px;background:#0d1726;border:1px solid #344155;border-radius:8px;font-size:11px}.wan-asset-tile img{width:100%;height:90px;object-fit:contain;border-radius:5px;background:#090e16}.wan-asset-tile strong{font-size:12px}.wan-asset-tile span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#adc0d9}.wan-asset-remove{justify-self:end;padding:4px 10px;font-size:12px}
+
+.wan-prompt-audit{margin-top:12px;white-space:normal}.wan-prompt-audit summary{cursor:pointer;font-size:13px;color:#b8d3ff}.wan-prompt-audit pre{margin-top:8px;max-height:240px;border:1px solid #344155;border-radius:8px;background:#0d131d;line-height:1.6}
+
+#queue-status{padding:8px 20px;font-size:12px;line-height:1.5;color:#b8c9e1;border-bottom:1px solid #344155}
+
+
+.chat-model-label{display:flex;flex-direction:column;gap:4px;color:#b8c9e1;font-size:12px;white-space:nowrap}.chat-model-label select{font-size:13px}
+
+/* Keep connection and queue information in one compact toolbar. */
+header{padding:12px 20px;flex-shrink:0}
+h1{font-size:21px;margin:3px 0}
+.console-status-bar{display:flex;align-items:center;flex-wrap:wrap;gap:6px 20px;padding:8px 20px;border-bottom:1px solid #344155;flex-shrink:0}
+.console-status-bar #status,.console-status-bar #queue-status{padding:0;border:0;line-height:1.5;font-size:12px}
+.console-status-bar nav{padding:0;border:0;font-size:12px}
+.console-status-bar #queue-status{margin-left:auto}
+@media(max-width:760px){header{padding:10px 12px}h1{font-size:18px}.console-status-bar{padding:7px 12px;gap:5px 12px}.console-status-bar #queue-status{margin-left:0}}
+
+.console-view{display:flex;flex-direction:column;flex:1;min-height:0}.console-view[hidden],#usage-history-panel[hidden]{display:none}
+.console-tabs{flex-shrink:0}.console-tabs button{padding:8px 16px}
+#usage-history-panel{flex:1;min-height:0;overflow:auto;padding:18px 20px}
+.usage-history-toolbar{display:flex;align-items:center;gap:14px;margin-bottom:16px}.usage-history-toolbar span{font-size:13px;color:#adc0d9}
+#usage-history-records{display:grid;gap:18px}.usage-history-record{padding:16px;border:1px solid #344155;border-radius:10px;background:#18212e}
+.usage-history-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:14px}.usage-history-heading h2{padding:0;border:0;font-size:14px;overflow-wrap:anywhere}.usage-history-heading span{font-size:12px;color:#adc0d9}
+.usage-history-grid{display:grid;grid-template-columns:1fr 1.15fr 1fr;gap:18px;margin-bottom:14px}.usage-history-grid section{min-width:0}.usage-history-grid h3{font-size:14px;margin:0 0 10px}.usage-history-grid h4{font-size:12px;color:#adc0d9;margin:12px 0 6px}
+.usage-history-grid p,.usage-history-grid span{font-size:12px;color:#adc0d9;overflow-wrap:anywhere}.usage-history-video-id{margin-bottom:5px}
+.usage-history-record pre{flex:initial;max-height:230px;background:#0d131d;border:1px solid #344155;border-radius:7px;line-height:1.6}.usage-history-record video{width:100%;max-height:290px;margin:8px 0}
+.usage-history-record .usage-history-json{margin-top:12px;max-height:440px}.usage-history-json[hidden]{display:none}#usage-history-more{margin-top:16px}
+@media(max-width:900px){.usage-history-grid{grid-template-columns:1fr}.usage-history-heading{align-items:flex-start}#usage-history-panel{padding:12px}}
+</style><style id="shortform-styles">
+#shortform-panel {
+  --sf-muted: #adc0d9;
+  --sf-line: #344155;
+  --sf-control-line: #536989;
+  --sf-card: #18212e;
+  --sf-input: #0d131d;
+  --sf-accent: #315fc2;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px clamp(10px, 1.3vw, 18px) 14px;
+}
+#shortform-panel:not([hidden]) { display: flex; flex-direction: column; }
+
+.sf-heading, .sf-scene-heading, .sf-navigation {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.sf-heading { margin-bottom: 10px; flex: none; flex-wrap: wrap; }
+.sf-heading h2 { font-size: 16px; border: 0; padding: 0; }
+.sf-header-field { display: flex; align-items: center; gap: 6px; min-width: 0; color: var(--sf-muted); font-size: 13px; }
+.sf-header-field :is(select, input) { min-width: 0; padding: 6px 9px; }
+.sf-header-field input { width: 122px; border: 1px solid var(--sf-control-line); border-radius: 8px; color: #eef5ff; background: var(--sf-input); font: inherit; }
+.sf-workspace { display: grid; flex: 1 1 0; min-height: 300px; grid-template-columns: minmax(0, 45fr) minmax(0, 55fr); grid-template-rows: minmax(0, 1fr); gap: 10px; }
+.sf-card { border: 1px solid var(--sf-line); border-radius: 15px; background: var(--sf-card); }
+.sf-editor { padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+#sf-fields { display: grid; flex: 1 1 0; grid-template-columns: 64px minmax(0, 1fr); grid-template-rows: repeat(4, auto) minmax(0, 1fr); align-items: start; gap: 8px; border: 0; margin: 0; padding: 0; min-width: 0; min-height: 0; }
+#sf-fields label { padding-top: 8px; font-size: 14px; }
+#sf-draft, .sf-scene-heading, #sf-scenes { grid-column: 1 / -1; }
+.sf-scene-heading { justify-content: space-between; }
+.sf-scene-heading h3 { font-size: 15px; margin: 0; }
+#sf-scenes { display: grid; grid-auto-rows: minmax(94px, 1fr); align-self: stretch; gap: 6px; padding: 6px; border: 1px solid var(--sf-line); border-radius: 11px; overflow: auto; overscroll-behavior-y: contain; scrollbar-gutter: stable; }
+.sf-scene-row { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 6px; align-items: center; }
+.sf-order { display: grid; gap: 3px; }
+.sf-scene { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; grid-template-rows: auto minmax(0, 1fr); align-self: stretch; align-items: center; gap: 4px 7px; padding: 6px 8px; border: 1px solid var(--sf-line); border-radius: 10px; background: var(--sf-input); }
+.sf-index { min-width: 24px; text-align: center; border: 1px solid var(--sf-control-line); border-radius: 6px; background: #253c61; font-size: 12px; padding: 3px 5px; font-variant-numeric: tabular-nums; }
+#shortform-panel #sf-fields input, #shortform-panel #sf-fields textarea {
+  min-width: 0;
+  width: 100%;
+  color: #eef5ff;
+  background: var(--sf-input);
+  border: 1px solid var(--sf-control-line);
+  border-radius: 7px;
+  font: inherit;
+  font-size: 14px;
+  padding: 6px 9px;
+}
+#shortform-panel #sf-fields textarea { resize: vertical; }
+#shortform-panel #sf-fields :is(input, textarea)::placeholder { color: #91a1b8; opacity: 1; }
+#shortform-panel #sf-fields .sf-scene textarea { grid-column: 1 / -1; align-self: stretch; min-height: 0; resize: none; border: 0; border-top: 1px dashed var(--sf-line); border-radius: 0; background: transparent; padding: 6px 1px 2px; line-height: 1.5; }
+#shortform-panel #sf-fields .sf-scene input { border-color: transparent; background: transparent; font-weight: 600; }
+.sf-output { display: flex; flex-direction: column; min-width: 0; gap: 10px; padding-bottom: 11px; }
+.sf-exchange { display: grid; grid-template-rows: minmax(0, 45fr) minmax(0, 55fr); flex: 1; min-height: 0; gap: 10px; }
+.sf-preview { min-height: 0; padding: 12px; overflow: auto; overflow-wrap: anywhere; }
+.sf-preview h3 { font-size: 13px; margin: 0 0 10px; color: var(--sf-muted); }
+.sf-preview pre { max-height: 220px; padding: 10px; border: 1px solid var(--sf-line); border-radius: 7px; background: var(--sf-input); line-height: 1.6; }
+.sf-preview pre:empty { display: none; }
+#sf-status { color: var(--sf-muted); font-size: 14px; margin: 0 0 12px; }
+#sf-status:empty { display: none; }
+.sf-navigation { flex: none; }
+.sf-navigation button { flex: 1; min-width: 0; min-height: 36px; }
+#shortform-panel :where(button:not(#sf-video button)) { padding: 6px 11px; font-size: 13px; }
+#shortform-panel #sf-add { font-size: 18px; padding: 2px 10px; }
+#shortform-panel .sf-order button { padding: 2px 0; border-color: transparent; background: transparent; line-height: 1; }
+#shortform-panel .sf-scene .sf-remove { border-color: transparent; background: transparent; padding: 2px 6px; font-size: 16px; }
+#shortform-panel .sf-primary { flex: none; margin-top: auto; background: var(--sf-accent); border-color: var(--sf-accent); color: #fff; font-weight: 650; min-height: 36px; }
+#shortform-panel button:disabled, #sf-fields:disabled button { cursor: default; opacity: .65; }
+#shortform-panel button:not(:disabled):hover { border-color: #719cff; }
+#shortform-panel button:focus-visible, #sf-fields :is(input, textarea):focus-visible { outline: 2px solid #9cc4ff; outline-offset: 2px; }
+#sf-video .wan-panel, #sf-video .wan-result { color: #eef5ff; color-scheme: dark; max-width: 100%; }
+@media (max-width: 760px) {
+  .sf-workspace { flex: none; min-height: 0; grid-template-columns: 1fr; grid-template-rows: auto; }
+  #sf-fields { flex: none; }
+  #sf-scenes { height: clamp(220px, 42dvh, 360px); }
+  .sf-output { padding-bottom: 0; }
+  .sf-exchange { grid-template-rows: minmax(135px, 45fr) minmax(165px, 55fr); }
+  .console-tabs button { padding-inline: 10px; }
+}
+</style></head><body>
+<main><header><div><small>HIGGSFIELD · 3D JUTSU CLOUD</small><h1>3D Jutsu Previs Console</h1></div><a id="connect" href="https://api-aipro.chatbaram.com/v1/previs/api/jutsu/connect">Higgsfield 연결</a></header>
+<div class="console-status-bar">
+<div id="status" role="status">연결 상태 확인중…</div>
+<nav aria-label="영상 생성 기능"><a href="https://api-aipro.chatbaram.com/v1/previs/wan-upload.html">완성된 프리비즈 업로드 → Wan 생성</a></nav>
+<div id="queue-status" role="status">동시 실행 최대 2개 · 초과 요청은 순서대로 대기</div>
+</div>
+<nav class="console-tabs" role="tablist" aria-label="콘솔 보기"><button id="console-shortform-tab" type="button" class="active" role="tab" aria-selected="true" aria-controls="shortform-panel" data-console-view="shortform">시나리오 생성</button><button id="console-chat-tab" type="button" role="tab" aria-selected="false" aria-controls="console-panel" tabindex="-1" data-console-view="chat">프리비즈 생성</button><button id="console-history-tab" type="button" role="tab" aria-selected="false" aria-controls="usage-history-panel" tabindex="-1" data-console-view="history">History</button></nav>
+<section id="console-panel" class="console-view" role="tabpanel" aria-labelledby="console-chat-tab" hidden><div class="workspace"><section class="chat"><div class="chat-heading"><h2>채팅 <span>AI · 3D Jutsu</span></h2><div class="chat-actions" role="group" aria-label="채팅 화면 관리"><button id="load-previs" type="button" title="저장된 프리비즈와 Wan 작업 결과 불러오기" >프리비즈 불러오기</button><button id="versions" type="button">버전 기록</button><button id="reset" type="button" title="채팅·작업 로그를 비우고 새 대화 시작. 저장된 영상과 로그인은 유지됩니다.">초기화</button><button id="refresh" type="button" title="콘솔 페이지 새로고침">새로고침</button></div></div><div id="messages" aria-live="polite"><p class="welcome">원하는 장면과 동작, 배경, 카메라 구도를 입력하세요.</p></div></section><aside><section class="logs"><h2>작업 로그 <span>Higgsfield Cloud MCP</span></h2><div id="logs"></div></section><section class="debug"><nav><button class="active" data-tab="payload">Payload</button><button data-tab="response">Response</button></nav><pre id="debug">요청을 보내면 실제 MCP 호출 정보가 표시됩니다.</pre></section></aside></div>
+<form id="form"><label class="chat-model-label" for="chat-model">프리비즈 채팅 모델<select id="chat-model" aria-label="채팅 AI 모델" disabled><option value="">모델 목록 확인 중…</option></select></label><select id="duration" aria-label="영상 길이"><option value="5">5초</option><option value="10">10초</option><option value="15">15초</option></select><select id="aspect" aria-label="화면 비율"><option>16:9</option><option>9:16</option><option>1:1</option><option>3:4</option><option>4:3</option></select><textarea id="input" rows="2" placeholder="원하는 장면과 동작을 자연어로 입력하세요" required></textarea><button id="send">보내기</button></form>
+<footer>프리비즈: Higgsfield 3D Jutsu · 영상 생성: Wan 3.0 (MP4 참고)</footer></section><section id="usage-history-panel" role="tabpanel" aria-labelledby="console-history-tab" hidden><div class="usage-history-toolbar"><button id="usage-history-refresh" type="button">새로고침</button><span id="usage-history-status" role="status"></span></div><div id="usage-history-records"></div><button id="usage-history-more" type="button" hidden>더 보기</button></section>
+<section id="shortform-panel" role="tabpanel" aria-labelledby="console-shortform-tab">
+  <div class="sf-heading">
+    <h2>시나리오 생성</h2>
+    <button id="sf-reset" type="button">새로고침</button>
+    <label class="sf-header-field">AI 모델
+      <select id="sf-model" disabled><option value="">모델 목록 확인 중…</option></select>
+    </label>
+    <label class="sf-header-field">dbname
+      <input id="sf-db-name" type="text" spellcheck="false">
+    </label>
+    <label class="sf-header-field">chatbotid
+      <input id="sf-chatbotid" type="text" spellcheck="false">
+    </label>
+  </div>
+  <div class="sf-workspace">
+    <section class="sf-card sf-editor" aria-label="시나리오 편집">
+      <fieldset id="sf-fields">
+        <label for="sf-title">제목</label><input id="sf-title" maxlength="120" placeholder="제목을 입력하세요">
+        <label for="sf-summary">내용</label><textarea id="sf-summary" rows="2" maxlength="4000" placeholder="핵심 내용을 입력하세요"></textarea>
+        <button id="sf-draft" type="button" disabled>시나리오 생성</button>
+        <div class="sf-scene-heading"><h3>시나리오 *</h3><button id="sf-add" type="button" aria-label="장면 추가">+</button></div>
+        <div id="sf-scenes"></div>
+      </fieldset>
+      <button id="sf-generate" class="sf-primary" type="button" disabled>이 시나리오로 영상 생성하기</button>
+    </section>
+    <section class="sf-output" aria-label="생성 요청 및 응답">
+      <div class="sf-exchange">
+        <section class="sf-card sf-preview" aria-labelledby="sf-payload-label">
+          <h3 id="sf-payload-label">Payload</h3>
+          <pre id="sf-payload" tabindex="0" aria-labelledby="sf-payload-label"></pre>
+        </section>
+        <section class="sf-card sf-preview" aria-labelledby="sf-response-label">
+          <h3 id="sf-response-label">Response</h3>
+          <p id="sf-status" role="status"></p>
+          <pre id="sf-response" tabindex="0" aria-labelledby="sf-response-label"></pre>
+        </section>
+      </div>
+    </section>
+  </div>
+  <template id="sf-scene">
+    <div class="sf-scene-row">
+      <div class="sf-order"><button type="button" data-move="-1">↑</button><button type="button" data-move="1">↓</button></div>
+      <div class="sf-scene">
+        <span class="sf-index"></span><input maxlength="120" placeholder="장면 제목을 입력하세요">
+        <button type="button" class="sf-remove">×</button>
+        <textarea rows="2" maxlength="4000" placeholder="장면 내용을 입력하세요"></textarea>
+      </div>
+    </div>
+  </template>
+</section>
+</main><script type="module">
+const apiBase = ["localhost", "127.0.0.1", "::1"].includes(location.hostname)
+  ? "" : "https://api-aipro.chatbaram.com/v1/previs";
+document.getElementById("connect").href = apiBase + "/api/jutsu/connect";
+document.querySelector("nav[aria-label] a").href = apiBase + "/wan-upload.html";
+const [{initUsageHistory}, {renderVideoValidation}, {createApiClient}, {initPrevis}, {initShortform}] = await Promise.all([
+  import(apiBase + '/usage-history.js'),
+  import(apiBase + '/video-validation.js'),
+  import(apiBase + '/api-client.js'),
+  import(apiBase + '/previs-console.js'),
+  import(apiBase + '/shortform.js')
+]);
+const {
+  apiUrl,
+  request
+} = createApiClient({attachStatus: true});
+const $ = id => document.getElementById(id);
+
+const modelSelects = [$('chat-model'), $('sf-model')];
+for (const select of modelSelects) {
+  select.addEventListener('change', () => {
+    for (const other of modelSelects) other.value = select.value;
+  });
+}
+const query = new URLSearchParams(location.search);
+$('sf-db-name').value = query.get('db_name') ?? '';
+$('sf-chatbotid').value = query.get('chatbotid') ?? '';
+const getWorkSettings = () => ({
+  model: $('sf-model').value,
+  db_name: $('sf-db-name').value.trim(),
+  chatbotid: $('sf-chatbotid').value.trim()
+});
+
+const previs = initPrevis({request, apiUrl, renderVideoValidation, getWorkSettings});
+initShortform({request, getWorkSettings, ...previs});
+const activateHistory = initUsageHistory({request, apiUrl});
+
+async function loadChatModels() {
+  try {
+    const config = await request('/api/chat/models');
+    for (const select of modelSelects) {
+      select.replaceChildren(...config.models.map(name => new Option(name, name)));
+      select.value = config.default;
+      select.disabled = false;
+    }
+  } catch (error) {
+    for (const select of modelSelects) {
+      select.replaceChildren(new Option('모델 목록을 불러오지 못했습니다', ''));
+    }
+    $('status').textContent = '채팅 모델 설정을 불러올 수 없습니다: ' + error.message;
+  }
+}
+void loadChatModels();
+
+const tabs = [...document.querySelectorAll('[data-console-view]')];
+function selectTab(selected) {
+  for (const player of document.querySelectorAll('main video')) player.pause();
+  for (const tab of tabs) {
+    const active = tab === selected;
+    tab.classList.toggle('active', active);
+    tab.setAttribute('aria-selected', String(active));
+    tab.tabIndex = active ? 0 : -1;
+    document.getElementById(tab.getAttribute('aria-controls')).hidden = !active;
+  }
+  if (selected.dataset.consoleView === 'history') activateHistory();
+}
+tabs.forEach((tab, index) => {
+  tab.addEventListener('click', () => selectTab(tab));
+  tab.addEventListener('keydown', event => {
+    if (!['ArrowLeft','ArrowRight','Home','End'].includes(event.key)) return;
+    event.preventDefault();
+    const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 :
+      (index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+    selectTab(tabs[next]);
+    tabs[next].focus();
+  });
+});
+</script></body></html>

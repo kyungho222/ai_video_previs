@@ -1,0 +1,3 @@
+services:
+  video:
+    image: ai-pro-videocreate:${VERSION:-unversioned}
