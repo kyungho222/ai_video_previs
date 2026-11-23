@@ -232,7 +232,7 @@ def _log_failure(body, route, status, code, *, fallback):
     )
 
 
-async def routed_post(http, openai_key, path, body, *, config=None):
+async def routed_post(http, openai_key, path, body, *, config=None, allow_fallback=True):
     """Try the selected chat model, then GPT once on an operational failure."""
     if path != 'responses':
         response = await _post_once(http, openai_key, path, body, config=config)
@@ -258,7 +258,7 @@ async def routed_post(http, openai_key, path, body, *, config=None):
         error = caught
         code = type(caught).__name__
     selected_model = route.model if route else canonical_model(body.get('model'))
-    fallback = selected_model != FALLBACK_MODEL and not safety
+    fallback = allow_fallback and selected_model != FALLBACK_MODEL and not safety
     _log_failure(body, route, response.status_code if response else '-', code, fallback=fallback)
     if not fallback:
         if error:

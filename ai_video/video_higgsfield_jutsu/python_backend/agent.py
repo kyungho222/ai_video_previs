@@ -1,6 +1,6 @@
 """Stable previs agent entry point; planning, execution and remote I/O have separate owners."""
 import time
-from . import previs_execution, previs_planning
+from . import previs_execution, previs_planning, scene_pipeline
 from .remote_tools import (
     tool_kind,
     result_data,
@@ -31,7 +31,7 @@ class JutsuAgent:
 
 
     async def run(self, job, history, emit):
-        return await previs_execution.run(self, job, history, emit)
+        return await scene_pipeline.run(self, job, history, emit)
 
     async def _connect(self, job, emit):
         started = time.monotonic()

@@ -16,7 +16,7 @@ from .prompt_filter import guard_model_request
 
 
 async def request_openai(http, api_key, path, body, emit, *, stage_label=None, sleep=asyncio.sleep,
-                         usage_sink=None, job_id=None, session_id=None):
+                         usage_sink=None, job_id=None, session_id=None, allow_fallback=True):
     body = guard_model_request(path, body)
     started = time.monotonic()
     route_metadata = {'provider':'openai', 'model':body.get('model')}
@@ -43,7 +43,7 @@ async def request_openai(http, api_key, path, body, emit, *, stage_label=None, s
             delay = float(2**attempt)
             attempt_started = time.monotonic()
             try:
-                response = await routed_post(http, api_key, path, body)
+                response = await routed_post(http, api_key, path, body, allow_fallback=allow_fallback)
                 route_metadata = response.extensions.get('model_route', route_metadata)
                 if response.extensions.get('model_fallback'):
                     fallback_used = True

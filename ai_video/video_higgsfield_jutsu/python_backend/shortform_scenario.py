@@ -59,6 +59,7 @@ async def generate_scenario(*, title, summary, model, api_key, transport, reques
     logger.info("[요청 %s] 시나리오 프롬프트 검사 시작", request_id)
     review = await filter_user_prompts(
         title, summary, model=model, api_key=api_key, transport=transport, usage_sink=usage.append,
+        allow_fallback=False,
     )
     body = {
         "model": model,
@@ -75,7 +76,7 @@ async def generate_scenario(*, title, summary, model, api_key, transport, reques
         response = await request_openai(
             http, api_key, "responses", body,
             lambda _kind, value: logging.getLogger(__name__).info("%s", value),
-            stage_label="숏폼 시나리오 생성", usage_sink=usage.append,
+            stage_label="숏폼 시나리오 생성", usage_sink=usage.append, allow_fallback=False,
         )
     try:
         scenes = model_object(response)["scenes"]

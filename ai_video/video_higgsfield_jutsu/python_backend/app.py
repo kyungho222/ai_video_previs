@@ -474,7 +474,26 @@ def create_api_router(*, root=DEFAULT_ROOT, python_client=None, agent=None, tran
             }
         message = body["message"].strip()
         if not message or len(message) > 8000:
-            raise HTTPException(400, detail="장면 내용은 1~8000자로 입력하세요.")
+            pipeline_logger.warning(
+                "[요청 %s] 프리비즈 입력 검증 실패 · header_session=%s body_session=%s "
+                "scenario_loaded=%s input_chars=%d resolved_chars=%d limit=8000",
+                request.state.pipeline_id, bool(header_session_id), bool(body_session_id),
+                scenario is not None, len(message_value.strip()), len(message),
+            )
+            if not message:
+                detail = (
+                    "저장된 시나리오를 불러오지 못했습니다. 시나리오를 다시 선택하거나 생성하세요."
+                    if scenario_session_id else
+                    "장면 내용이 비어 있습니다. 시나리오를 선택하거나 장면 내용을 입력하세요."
+                )
+            else:
+                detail = (
+                    f"시나리오와 추가 요청사항을 합친 내용이 {len(message):,}자로 8,000자를 초과했습니다. "
+                    "제목·개요·장면 내용 또는 추가 요청사항을 줄여 주세요."
+                    if scenario is not None else
+                    f"장면 내용이 {len(message):,}자로 8,000자를 초과했습니다. 내용을 줄여 주세요."
+                )
+            raise HTTPException(400, detail=detail)
         model = effective_chat_model(service, body.get("model", service.default_model))
         if not isinstance(model, str) or model not in service.chat_models:
             raise HTTPException(400, detail="허용된 채팅 모델을 선택하세요.")
@@ -520,7 +539,7 @@ def create_api_router(*, root=DEFAULT_ROOT, python_client=None, agent=None, tran
             pipeline_logger.info("[요청 %s] 프리비즈 프롬프트 검사 시작", request.state.pipeline_id)
             prompt_filter = await filter_user_prompts(
                 baseline_prompt, message, model=model, api_key=service.config.get("OPENAI_API_KEY"),
-                transport=service.transport, usage_sink=inspection_usage.append,
+                transport=service.transport, usage_sink=inspection_usage.append, allow_fallback=False,
             )
             job, session, history = service.store.create(
                 message, session_id, duration, aspect, new_scene=new_scene,
@@ -583,6 +602,10 @@ def create_api_router(*, root=DEFAULT_ROOT, python_client=None, agent=None, tran
                 "baseVersion",
                 "request",
                 "plan",
+                "sceneDesign",
+                "pipeline",
+                "designValidation",
+                "projectCreation",
                 "workerDrafts",
                 "directorAttempts",
                 "unresolvedValidation",

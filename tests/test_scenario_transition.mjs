@@ -90,6 +90,8 @@ test('send without extra requirements submits the saved scenario', async () => {
   assert.equal(calls.length, 1);
   assert.equal(calls[0].url, '/api/previs/generate');
   assert.equal(calls[0].options.headers.sessionId, 'saved-scenario');
+  assert.equal(JSON.parse(calls[0].options.body).sessionId, 'saved-scenario',
+    'scenario context must survive a proxy dropping the custom header');
   assert.equal(JSON.parse(calls[0].options.body).message, '');
 });
 

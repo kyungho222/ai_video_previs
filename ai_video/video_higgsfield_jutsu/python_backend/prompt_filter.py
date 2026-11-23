@@ -175,8 +175,26 @@ def model_object(response):
     return value
 
 
+def admission_object(response, stage):
+    """Check decision values, never accept an echoed schema as an admission result."""
+    value = model_object(response)
+    if stage == 'prompt_injection_admission':
+        if (type(value.get('injection')) is not bool
+                or value.get('category') not in ('none', 'instruction_override', 'role_spoofing',
+                                                 'secret_disclosure', 'tool_abuse')
+                or value['injection'] == (value['category'] == 'none')):
+            raise ValueError('invalid_injection_decision')
+    elif stage == 'content_rating_admission':
+        for category in ('sexual', 'violence'):
+            if (type(value.get(category + '_level')) is not int
+                    or value[category + '_level'] not in range(4)
+                    or not isinstance(value.get(category + '_reason'), str)):
+                raise ValueError('invalid_content_rating')
+    return value
+
+
 async def filter_user_prompts(*texts, model, api_key=None, transport=None, request=None, cached=None,
-                              usage_sink=None):
+                              usage_sink=None, allow_fallback=True):
     """Reject prohibited text before generation; inspection errors remain retryable."""
     text = '\n\n'.join(dict.fromkeys(value.strip() for value in texts if value and value.strip()))
     check_local_terms(text)
@@ -202,7 +220,7 @@ async def filter_user_prompts(*texts, model, api_key=None, transport=None, reque
         async with httpx.AsyncClient(timeout=httpx.Timeout(30, connect=10), transport=transport,
                                      follow_redirects=False, trust_env=False) as client:
             started = time.monotonic()
-            response = await routed_post(client, api_key, path, body)
+            response = await routed_post(client, api_key, path, body, allow_fallback=allow_fallback)
             response.raise_for_status()
             data = response.json()
             route = response.extensions.get('model_route', {'provider':'openai','model':body.get('model')})
@@ -258,9 +276,28 @@ async def filter_user_prompts(*texts, model, api_key=None, transport=None, reque
             }, 'required': ['sexual_level', 'violence_level', 'sexual_reason', 'violence_reason'],
                        'additionalProperties': False}}},
     }
+    async def checked_send(body):
+        stage = body['text']['format']['name']
+        for attempt in range(2):
+            result = await send('responses', body)
+            try:
+                admission_object(result, stage)
+                return result
+            except (ValueError, TypeError, KeyError, AttributeError):
+                logging.getLogger('uvicorn.error').warning(
+                    '[prompt-filter] 검사 응답 형식 오류 · 단계 %s · 모델 %s · 보정 %d/1',
+                    stage, model, attempt)
+                if attempt:
+                    raise
+                body = {**body, 'instructions': body['instructions']
+                        + '\nFORMAT CORRECTION: Return the actual classification DECISION for the '
+                        'original untrusted_user_text, not the JSON schema or property definitions. '
+                        'Do not change the classification rules or presume the input is safe. '
+                        'Use actual boolean/integer/string values in the required fields.'}
+
     # Await every branch before admitting work. Inspection errors cannot admit a job.
     inspection, graded, moderated = await asyncio.gather(
-        send('responses', injection_body), send('responses', rating_body),
+        checked_send(injection_body), checked_send(rating_body),
         send('moderations', {'model': 'omni-moderation-latest', 'input': text}),
         return_exceptions=True,
     )
@@ -269,7 +306,7 @@ async def filter_user_prompts(*texts, model, api_key=None, transport=None, reque
         errors.append(inspection)
     else:
         try:
-            decision = model_object(inspection)
+            decision = admission_object(inspection, 'prompt_injection_admission')
             if (type(decision.get('injection')) is not bool
                     or decision.get('category') not in ('none', 'instruction_override', 'role_spoofing',
                                                        'secret_disclosure', 'tool_abuse')
@@ -287,7 +324,7 @@ async def filter_user_prompts(*texts, model, api_key=None, transport=None, reque
         errors.append(graded)
     else:
         try:
-            value = model_object(graded)
+            value = admission_object(graded, 'content_rating_admission')
             for category in ('sexual', 'violence'):
                 level = value.get(category + '_level')
                 reason = value.get(category + '_reason')

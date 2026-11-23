@@ -407,6 +407,7 @@ export function initPrevis({request, apiUrl, renderVideoValidation, getWorkSetti
           ...(scenarioSessionId ? {sessionId: scenarioSessionId} : {})
         },
         body: JSON.stringify(scenarioSessionId ? {
+          sessionId: scenarioSessionId,
           message: requirements,
           duration: $('duration').value,
           aspect: $('aspect').value

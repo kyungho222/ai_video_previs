@@ -222,7 +222,10 @@ async function loadChatModels() {
         option.disabled = item.configured === false;
         return option;
       }));
-      select.value = config.default;
+      const scenarioDefault = choices.find(item =>
+        item.value === 'google/gemma-4-26B-A4B-it' && item.configured !== false
+      )?.value ?? config.default;
+      select.value = select.id === 'sf-model' ? scenarioDefault : config.default;
       select.disabled = false;
     }
   } catch (error) {

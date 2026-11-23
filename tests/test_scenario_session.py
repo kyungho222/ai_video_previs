@@ -70,7 +70,8 @@ def test_previs_accepts_body_session_and_natural_language_requirements(tmp_path)
 
 
 @pytest.mark.parametrize("requirements", [{}, {"message": ""}, {"message": "   "}])
-def test_saved_scenario_needs_no_additional_requirements(tmp_path, requirements):
+@pytest.mark.parametrize("session_location", ["header", "body", "both"])
+def test_saved_scenario_needs_no_additional_requirements(tmp_path, requirements, session_location):
     router = create_api_router(root=tmp_path, python_client=SimpleNamespace(), agent=SimpleNamespace())
     app = FastAPI()
     app.include_router(router)
@@ -86,7 +87,11 @@ def test_saved_scenario_needs_no_additional_requirements(tmp_path, requirements)
         "ai_video.video_higgsfield_jutsu.python_backend.app.filter_user_prompts",
         new=AsyncMock(return_value={}),
     ) as inspect:
-        response = client.post("/api/previs/generate", headers={"sessionId": session_id}, json=requirements)
+        response = client.post(
+            "/api/previs/generate",
+            headers={"sessionId": session_id} if session_location in ("header", "both") else {},
+            json={**requirements, **({"sessionId": session_id} if session_location in ("body", "both") else {})},
+        )
     assert response.status_code == 202, response.text
     prompt = service.store.get(response.json()["jobId"])["data"]["request"]
     assert "성인이 손을 흔든다." in prompt
@@ -101,3 +106,37 @@ def test_no_scenario_still_requires_scene_text(tmp_path):
     client = TestClient(app)
     assert client.post("/api/previs/generate", json={}).status_code == 400
     assert client.post("/api/previs/generate", json={"message": ""}).status_code == 400
+
+
+@pytest.mark.parametrize("saved", [False, True])
+def test_invalid_previs_reports_context_and_lengths_without_prompt(tmp_path, caplog, saved):
+    import logging
+    from uuid import uuid4
+    from ai_video.video_higgsfield_jutsu.python_backend.scenario_session import scenario_prompt
+
+    router = create_api_router(root=tmp_path, python_client=SimpleNamespace(), agent=SimpleNamespace())
+    service = router.service
+    record = {
+        "title": "private title", "summary": "private summary",
+        "scenes": [{"title": "private scene", "prompt": "x" * 8000}],
+        "settings": {"model": service.default_model},
+    }
+    session_id = service.scenarios.save(record) if saved else str(uuid4())
+    app = FastAPI()
+    app.include_router(router)
+    with caplog.at_level(logging.WARNING):
+        response = TestClient(app).post("/api/previs/generate", json={
+            "sessionId": session_id, "message": "", "aspect": "9:16", "duration": "15",
+        })
+    assert response.status_code == 400
+    if saved:
+        assert "8,000자" in response.json()["detail"]
+        assert f"{len(scenario_prompt(record)):,}" in response.json()["detail"]
+    else:
+        assert "시나리오" in response.json()["detail"]
+    assert "header_session=False body_session=True" in caplog.text
+    assert f"scenario_loaded={saved}" in caplog.text
+    assert "input_chars=0" in caplog.text
+    assert "private title" not in caplog.text
+    assert "private summary" not in caplog.text
+    assert "x" * 80 not in caplog.text

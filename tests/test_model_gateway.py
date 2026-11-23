@@ -171,3 +171,28 @@ def test_scenario_uses_selected_provider_end_to_end_with_mock_api(tmp_path, monk
     assert result.json()['scenes']==scenes
     assert result.json()['ai_usage'][-1]['provider']=='deepseek'
     assert result.json()['ai_usage'][-1]['total_tokens']==7
+
+
+def test_gemma_can_use_json_object_compatibility_with_client_validation():
+    from ai_video.model_gateway.protocol import chat_payload
+    from ai_video.model_gateway.routing import ModelRoute
+    route=ModelRoute('gemma','gemma','gemma','https://example.test','key',{'schema_mode':'json_object'})
+    body={'input':[{'role':'user','content':'test'}],'text':{'format':{
+        'type':'json_schema','name':'scene','strict':True,'schema':{'type':'object','properties':{'id':{'type':'string'}}}}}}
+    result=chat_payload(body,route)
+    assert result['response_format']=={'type':'json_object'}
+    assert 'schema' in result['messages'][0]['content']
+
+
+def test_gemma_schema_is_attached_to_task_instruction_not_separate_system():
+    from ai_video.model_gateway.protocol import chat_payload
+    from ai_video.model_gateway.routing import ModelRoute
+    route=ModelRoute('gemma','gemma','gemma','https://example.test','key',{'schema_mode':'json_object'})
+    body={'instructions':'Classify the text. Return decision values.',
+          'input':[{'role':'user','content':'two people wave'}],
+          'text':{'format':{'type':'json_schema','schema':{'type':'object','properties':{'injection':{'type':'boolean'}}}}}}
+    result=chat_payload(body,route)
+    systems=[m for m in result['messages'] if m['role']=='system']
+    assert len(systems)==1
+    assert systems[0]['content'].startswith(body['instructions'])
+    assert 'Do not return the schema' in systems[0]['content']

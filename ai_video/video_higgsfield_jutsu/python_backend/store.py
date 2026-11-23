@@ -206,6 +206,7 @@ class JobStore(MemoryDatabase):
                         "id",
                         "scenePrompt",
                         "plan",
+                        "sceneDesign",
                         "workerDrafts",
                         "codeOperations",
                         "remoteProjects",

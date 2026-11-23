@@ -141,7 +141,8 @@
       "provider": "gemma",
       "api_base": "https://api-aipro.chatbaram.com/sllm/v1",
       "api_key_name": "local",
-      "use_completion_tokens": false
+      "use_completion_tokens": false,
+      "schema_mode": "json_object"
     }
   },
   "disabled_model_mappings": {

@@ -39,7 +39,7 @@ class Objects(list):
     def get(self, name): return next((o for o in self if o.name==name),None)
 
 class VisibilityTests(unittest.TestCase):
-    def run_check(self, blocked=True, hidden=False, block_frames=None, points=None):
+    def run_check(self, blocked=True, hidden=False, block_frames=None, points=None, focus_intervals=None):
         scope={};exec(compile(RESOURCE.read_text(encoding='utf-8'),'camera_visibility','exec'),scope)
         root=Object('Dancer',kind='EMPTY');root['previs_motion_version']='registered'
         head=Object('Dancer_Head',(10,0,1.8),root)
@@ -48,6 +48,7 @@ class VisibilityTests(unittest.TestCase):
         root['previs_motion_markers']=json.dumps({'L_Hand':hand.name})
         camera=Object('Camera',(0,0,1.5),kind='CAMERA')
         camera['previs_framing_subjects']=json.dumps([root.name])
+        if focus_intervals is not None:camera['previs_focus_intervals']=json.dumps(focus_intervals)
         wall=Object('Wall',(5,0,0));wall.hide_render=hidden
         scene=SimpleNamespace(camera=camera, objects=Objects([root,head,torso,hand,wall]),
                               frame_start=1,frame_end=24,frame_current=7,
@@ -123,5 +124,14 @@ class VisibilityTests(unittest.TestCase):
         self.assertIn('previs_validate_visibility',ast.literal_eval(assignment.value))
         prelude=(base/'resources/cloud_prelude.py').read_text(encoding='utf-8')
         self.assertIn('"visibilityValidation": visibility_report',prelude)
+
+
+
+    def test_inactive_scene_subject_is_not_validated(self):
+        report,issues=self.run_check(block_frames=set(range(1,13)),focus_intervals=[
+            {'start':1,'end':12,'subjects':[]}, {'start':13,'end':24,'subjects':['Dancer']}])
+        self.assertTrue(report['passed'])
+        self.assertEqual(report['subjects'][0]['testedFrames'],12)
+        self.assertFalse(issues)
 
 if __name__ == '__main__':unittest.main()

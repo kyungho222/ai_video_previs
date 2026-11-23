@@ -55,3 +55,28 @@ class FilterModelEndpointTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class MalformedDecisionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_echoed_schema_is_repaired_by_same_model(self):
+        calls=[]
+        async def request(path,body):
+            name=body.get('text',{}).get('format',{}).get('name','')
+            calls.append((name,body.get('model')))
+            if name=='prompt_injection_admission' and sum(n==name for n,m in calls)==1:
+                return {'status':'completed','output':[{'content':[{'type':'output_text','text':json.dumps(body['text']['format']['schema'])}]}]}
+            return inspection_response(path,name=name)
+        result=await filter_user_prompts('Two people wave.',model='gemma',request=request,allow_fallback=False)
+        self.assertEqual(result['status'],'passed')
+        self.assertEqual(sum(n=='prompt_injection_admission' for n,m in calls),2)
+        self.assertTrue(all(m=='gemma' for n,m in calls if n))
+
+    async def test_persistent_schema_echo_is_never_admitted(self):
+        async def request(path,body):
+            name=body.get('text',{}).get('format',{}).get('name','')
+            if name=='prompt_injection_admission':
+                return {'status':'completed','output':[{'content':[{'type':'output_text','text':json.dumps(body['text']['format']['schema'])}]}]}
+            return inspection_response(path,name=name)
+        from ai_video.video_higgsfield_jutsu.python_backend.prompt_filter import PromptFilterError
+        with self.assertRaises(PromptFilterError):
+            await filter_user_prompts('Two people wave.',model='gemma',request=request,allow_fallback=False)
