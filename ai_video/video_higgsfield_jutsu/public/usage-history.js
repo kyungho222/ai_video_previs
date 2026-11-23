@@ -112,6 +112,42 @@ export function initUsageHistory({request, apiUrl}) {
     } else {
       previs.append(element('p', item.state === 'running' ? '생성 중입니다.' : '보관된 영상 파일이 없습니다.'));
     }
+    const noteForm = element('form', undefined, 'usage-history-note');
+    const noteLabel = element('label', '메모');
+    const noteInput = document.createElement('input');
+    noteInput.type = 'text';
+    noteInput.maxLength = 500;
+    noteInput.id = 'history-note-' + item.jobId;
+    noteInput.value = item.note || '';
+    noteInput.placeholder = '이 작업에 대한 한 줄 메모';
+    noteLabel.htmlFor = noteInput.id;
+    const noteSave = element('button', '저장');
+    noteSave.type = 'submit';
+    const noteStatus = element('span');
+    noteStatus.setAttribute('role', 'status');
+    noteInput.addEventListener('input', () => { noteStatus.textContent = '저장되지 않은 변경'; });
+    noteForm.addEventListener('submit', async event => {
+      event.preventDefault();
+      if (noteSave.disabled) return;
+      noteSave.disabled = true;
+      noteInput.disabled = true;
+      noteStatus.textContent = '저장 중…';
+      try {
+        const data = await request('/api/usage-history/' + encodeURIComponent(item.jobId) + '/note', {
+          method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({note:noteInput.value})
+        });
+        item.note = data.note;
+        noteInput.value = data.note;
+        noteStatus.textContent = '메모 저장 완료';
+      } catch (error) {
+        noteStatus.textContent = '저장하지 못했습니다. ' + error.message;
+      } finally {
+        noteSave.disabled = false;
+        noteInput.disabled = false;
+      }
+    });
+    noteForm.append(noteLabel, noteInput, noteSave, noteStatus);
+    previs.append(noteForm);
     const prompts = element('section');
     prompts.append(element('h3', '채팅 프롬프트'));
     prompts.append(element('pre', item.request || item.scenePrompt || '저장된 프롬프트가 없습니다.'));

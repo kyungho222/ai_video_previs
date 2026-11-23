@@ -141,8 +141,10 @@ class MediaArchive:
             if isinstance(project, str) and re.fullmatch(UUID, project):
                 media_projects[str(index)] = project
         data = {"version": 1, "remoteProjects": projects, "mediaProjects": media_projects,
+                "sessionId": job.get("sessionId"),
                 "request": job.get("request", ""),
-                "plan": job.get("plan", {}), "scenePrompt": job.get("scenePrompt", ""),
+                "plan": job.get("plan", {}), "sceneDesign": job.get("sceneDesign"),
+                "scenePrompt": job.get("scenePrompt", ""),
                 "spatialManifestRef": job.get("spatialManifestRef")}
         if job.get("scenarioTitles"):
             data["scenarioTitles"] = job["scenarioTitles"]

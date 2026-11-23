@@ -8,6 +8,7 @@ import time
 import httpx
 from .audio_policy import SPEECH_LANGUAGE_RULES
 from .creative_policy import KOREAN_ATMOSPHERE_RULE
+from .scene_flow import SCENE_FLOW_RULES
 
 from .video_errors import PromptLengthError
 
@@ -339,6 +340,7 @@ async def optimize_video_prompt(
                         "You receive text and asset role labels only, not the video or images: do not claim to have inspected them. "
                         "When no action is specified, generate restrained natural behavior consistent with the scene. "
                         "When spatialGuideContext is supplied, use its stable entity-to-asset mapping and camera summary. "
+                        "When it includes sceneFlowRules, apply those rules before copying later reference positions, poses or camera paths. "
                         "Its characterDirection fixes character IDs, action ownership, voice profiles and dialogue speakers. "
                         "Keep those assignments exact while consolidating the scene; the server binds the complete ID contract afterwards. "
                         "Spatial guides define appearance and spatial composition; root staging and major events follow the previs when supplied, while detailed poses and local cadence are reconstructed. "
@@ -425,7 +427,7 @@ async def fit_video_prompt(prompt, *, request, model, max_length, required_texts
     if record.get("status") == "ready":
         return record
     fixed_sections = [section for section in (MOTION_RULES, INDEPENDENT_REACTION_RULES,
-                      CONTINUITY_RULES, SPEECH_LANGUAGE_RULES, KOREAN_ATMOSPHERE_RULE)
+                      CONTINUITY_RULES, SCENE_FLOW_RULES, SPEECH_LANGUAGE_RULES, KOREAN_ATMOSPHERE_RULE)
                       if section in prompt]
     presentation = (context or {}).get("generationRules", "")
     if presentation and presentation in prompt:

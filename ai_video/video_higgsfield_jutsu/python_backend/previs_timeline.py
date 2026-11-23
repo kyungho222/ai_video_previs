@@ -9,6 +9,7 @@ from pathlib import Path
 from .spatial_guides import GuideError, SpatialGuideBuilder, sample_frames, read_json_response
 import httpx
 from .video_errors import VideoError, PromptLengthError
+from .scene_flow import FIRST_SCENE_CONTINUITY, SCENE_FLOW_RULES
 from .video_media import inspect_video
 
 
@@ -106,7 +107,7 @@ def validate_timeline(value, duration):
     return value
 
 
-def timeline_prompt(plan, source_duration, output_duration):
+def timeline_prompt(plan, source_duration, output_duration, *, scene_flow_policy=None):
     scale = output_duration / source_duration
     lines = [
         'CAMERA AND STAGING TIMELINE',
@@ -122,12 +123,21 @@ def timeline_prompt(plan, source_duration, output_duration):
         'Scene: ' + plan['summary'],
         'Entities: ' + ' | '.join(plan['entities']),
     ]
-    for segment in plan['segments']:
+    continuous = scene_flow_policy == FIRST_SCENE_CONTINUITY
+    if continuous:
+        lines[1] = SCENE_FLOW_RULES
+    for index, segment in enumerate(plan['segments']):
+        if continuous:
+            lines.append('OPENING STATE ANCHOR' if index == 0 else 'LATER SCENE INTENT REFERENCE; inherit previous actual end state')
         lines.append(f"{segment['start'] * scale:.3f}–{segment['end'] * scale:.3f}s " +
                      ' | '.join(name + '=' + segment[name] for name in SEGMENT_FIELDS))
         for key in ('startPhysicalState', 'endPhysicalState'):
             if segment.get(key):
-                lines.append(key + '=' + segment[key])
+                if continuous and (index > 0 or key == 'endPhysicalState'):
+                    lines.append('Physical-state intent (' + key + '): ' + segment[key]
+                                 + ' | preserve contacts, held props and explicit changes; adapt absolute placement continuously')
+                else:
+                    lines.append(key + '=' + segment[key])
     for moment in plan.get('criticalMoments', []):
         lines.append(f"Critical action {moment['time'] * scale:.3f}s: " + moment['event']
                      + ' | requiredView=' + moment['requiredView'])
@@ -156,11 +166,14 @@ def preserve_timeline(prompt, transcript, limit):
 
 
 async def compact_timeline(plan, source_duration, output_duration, *, request, model,
-                           max_chars, cached=None, save=None, check_owner=None, progress=None):
+                           max_chars, cached=None, save=None, check_owner=None, progress=None,
+                           scene_flow_policy=None):
     """Condense wording while retaining all camera intervals and event anchors."""
-    original = timeline_prompt(plan, source_duration, output_duration)
+    original = timeline_prompt(plan, source_duration, output_duration, scene_flow_policy=scene_flow_policy)
     signature = dict(version=1, plan=plan, sourceDuration=source_duration,
                      outputDuration=output_duration, maxChars=max_chars, model=model)
+    if scene_flow_policy:
+        signature['sceneFlowPolicy'] = scene_flow_policy
     fingerprint = hashlib.sha256(json.dumps(signature, sort_keys=True).encode()).hexdigest()
     record = cached if isinstance(cached, dict) and cached.get('fingerprint') == fingerprint else {
         'fingerprint': fingerprint, 'attempts': [], 'plan': None, 'status': 'preparing',
@@ -190,7 +203,7 @@ async def compact_timeline(plan, source_duration, output_duration, *, request, m
                 'input': [{'role': 'user', 'content': json.dumps({
                     **signature, 'fixedPreambleChars': len(timeline_prompt({**plan, 'summary': '',
                         'entities': [], 'segments': [], 'uncertainties': [], 'criticalMoments': []},
-                        source_duration, output_duration)),
+                        source_duration, output_duration, scene_flow_policy=scene_flow_policy)),
                     'previousAttempt': record['attempts'][-1] if record['attempts'] else None,
                 }, ensure_ascii=False)}],
                 'text': {'format': {'type': 'json_schema', 'name': 'compact_camera_timeline',
@@ -207,7 +220,7 @@ async def compact_timeline(plan, source_duration, output_duration, *, request, m
             if [s['time'] for s in candidate.get('criticalMoments', [])] != [
                     s['time'] for s in plan.get('criticalMoments', [])]:
                 raise ValueError('Preserve every critical event and its exact time')
-            text = timeline_prompt(candidate, source_duration, output_duration)
+            text = timeline_prompt(candidate, source_duration, output_duration, scene_flow_policy=scene_flow_policy)
             if len(text) > max_chars:
                 raise ValueError(f'Compiled camera text is {len(text)} characters; maxChars={max_chars}')
             if check_owner:

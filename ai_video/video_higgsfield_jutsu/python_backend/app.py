@@ -18,6 +18,8 @@ from .agent import JutsuAgent
 from .ai_usage import report_usage
 from .store import JobStore
 from .usage_history import UsageHistory
+from .usage_database import UsageDatabase
+from .stage_usage import submit_stage_usage
 from .repositories import FEATURE_ROOT, local_repositories, runtime_base
 from .pipeline_log import log_message, log_request, logger as pipeline_logger
 from .prompt_filter import filter_user_prompts, PromptFilterError
@@ -124,6 +126,7 @@ class Service:
         self.transport = transport
         self.archive = self.repositories.archive
         self.usage_history = self.repositories.history
+        self.usage_database = UsageDatabase(config, runtime_base(self.root) / 'runtime/data/usage-db-outbox.sqlite3')
         self.scenarios = ScenarioSessions(runtime_base(self.root) / "runtime/data/scenario-sessions")
 
     async def ensure_authentication(self):
@@ -323,6 +326,19 @@ class Service:
                     self.usage_history.save_previs(snapshot["data"], snapshot["state"])
             except (OSError, ValueError, sqlite3.Error):
                 logger.warning("job=%s 사용기록 저장을 완료하지 못했습니다.", job["id"])
+            try:
+                snapshot = self.store.get(job["id"])
+                if snapshot and snapshot["state"] in {"completed", "failed"}:
+                    submit_stage_usage(self.usage_database,
+                        [event["value"] for event in snapshot["events"] if event["type"] == "ai_usage"], {
+                            **job.get("workSettings", {}),
+                            "db_name": job.get("usageDbName", job.get("workSettings", {}).get("db_name")),
+                            "usageLogEnabled": job.get("usageLogEnabled") is True,
+                            "job_id": job["id"], "session_id": job.get("sessionId"),
+                            "request_id": job.get("requestId"), "job_type": "previs_chat",
+                        }, state=snapshot["state"])
+            except Exception as error:
+                logger.warning("[사용량 DB] 프리비즈 집계 지연 · job=%s · %s", job["id"], type(error).__name__)
             logger.info(
                 "job=%s [previs-timing] 전체 처리: %.2f초", job["id"], time.monotonic() - started
             )
@@ -348,6 +364,8 @@ def create_api_router(*, root=DEFAULT_ROOT, python_client=None, agent=None, tran
         service.tasks.add(maintenance)
         authentication = asyncio.create_task(service.maintain_authentication())
         service.tasks.add(authentication)
+        usage_delivery = asyncio.create_task(service.usage_database.run())
+        service.tasks.add(usage_delivery)
         for job in video_router.manager.store.unfinished():
             video_router.manager.ensure(job)
         try:
@@ -442,6 +460,7 @@ def create_api_router(*, root=DEFAULT_ROOT, python_client=None, agent=None, tran
         if not isinstance(body, dict):
             raise HTTPException(400, detail="장면 내용을 입력하세요.")
         header_session_id = request.headers.get("sessionId")
+        usage_database_name = body.get("db_name")
         body_session_id = body.get("sessionId")
         if header_session_id and body_session_id and header_session_id != body_session_id:
             raise HTTPException(400, detail="헤더와 본문의 sessionId가 일치하지 않습니다.")
@@ -474,7 +493,26 @@ def create_api_router(*, root=DEFAULT_ROOT, python_client=None, agent=None, tran
             }
         message = body["message"].strip()
         if not message or len(message) > 8000:
-            raise HTTPException(400, detail="장면 내용은 1~8000자로 입력하세요.")
+            pipeline_logger.warning(
+                "[요청 %s] 프리비즈 입력 검증 실패 · header_session=%s body_session=%s "
+                "scenario_loaded=%s input_chars=%d resolved_chars=%d limit=8000",
+                request.state.pipeline_id, bool(header_session_id), bool(body_session_id),
+                scenario is not None, len(message_value.strip()), len(message),
+            )
+            if not message:
+                detail = (
+                    "저장된 시나리오를 불러오지 못했습니다. 시나리오를 다시 선택하거나 생성하세요."
+                    if scenario_session_id else
+                    "장면 내용이 비어 있습니다. 시나리오를 선택하거나 장면 내용을 입력하세요."
+                )
+            else:
+                detail = (
+                    f"시나리오와 추가 요청사항을 합친 내용이 {len(message):,}자로 8,000자를 초과했습니다. "
+                    "제목·개요·장면 내용 또는 추가 요청사항을 줄여 주세요."
+                    if scenario is not None else
+                    f"장면 내용이 {len(message):,}자로 8,000자를 초과했습니다. 내용을 줄여 주세요."
+                )
+            raise HTTPException(400, detail=detail)
         model = effective_chat_model(service, body.get("model", service.default_model))
         if not isinstance(model, str) or model not in service.chat_models:
             raise HTTPException(400, detail="허용된 채팅 모델을 선택하세요.")
@@ -520,7 +558,7 @@ def create_api_router(*, root=DEFAULT_ROOT, python_client=None, agent=None, tran
             pipeline_logger.info("[요청 %s] 프리비즈 프롬프트 검사 시작", request.state.pipeline_id)
             prompt_filter = await filter_user_prompts(
                 baseline_prompt, message, model=model, api_key=service.config.get("OPENAI_API_KEY"),
-                transport=service.transport, usage_sink=inspection_usage.append,
+                transport=service.transport, usage_sink=inspection_usage.append, allow_fallback=False,
             )
             job, session, history = service.store.create(
                 message, session_id, duration, aspect, new_scene=new_scene,
@@ -533,8 +571,12 @@ def create_api_router(*, root=DEFAULT_ROOT, python_client=None, agent=None, tran
             raise HTTPException(409, detail=str(exc)) from None
         job["chatModel"] = model
         job["sessionId"] = session
+        job["usageLogEnabled"] = body.get("usageLogEnabled") is True
+        job["usageDbName"] = usage_database_name
+        job["requestId"] = request.state.pipeline_id
         job["promptFilter"] = prompt_filter
         try:
+            service.store.checkpoint(job)
             service.usage_history.save_previs(job, "running")
         except (OSError, ValueError, sqlite3.Error):
             logging.getLogger("uvicorn.error").warning("job=%s 사용기록 저장 지연", job["id"])
@@ -583,6 +625,10 @@ def create_api_router(*, root=DEFAULT_ROOT, python_client=None, agent=None, tran
                 "baseVersion",
                 "request",
                 "plan",
+                "sceneDesign",
+                "pipeline",
+                "designValidation",
+                "projectCreation",
                 "workerDrafts",
                 "directorAttempts",
                 "unresolvedValidation",
@@ -658,6 +704,23 @@ def create_api_router(*, root=DEFAULT_ROOT, python_client=None, agent=None, tran
         await asyncio.to_thread(service.usage_history.delete, job_id)
         pipeline_logger.info("사용기록 삭제완료 · Job %s", job_id)
         return {"ok": True, "jobId": job_id}
+
+    @router.post("/api/usage-history/{job_id}/note")
+    async def usage_history_note(job_id: str, request: Request):
+        if not re.fullmatch(UUID, job_id):
+            raise HTTPException(404, detail="사용기록을 찾을 수 없습니다.")
+        try:
+            payload = await request.json()
+        except ValueError:
+            raise HTTPException(422, detail="메모를 JSON 문자열로 전달하세요.") from None
+        note = payload.get("note") if isinstance(payload, dict) else None
+        if not isinstance(note, str) or len(note) > 500 or any(char in note for char in "\r\n\u2028\u2029"):
+            raise HTTPException(422, detail="메모는 최대 500자의 한 줄로 입력하세요.")
+        note = note.strip()
+        found = await asyncio.to_thread(service.usage_history.set_note, job_id, note)
+        if not found:
+            raise HTTPException(404, detail="사용기록을 찾을 수 없습니다.")
+        return {"ok": True, "jobId": job_id, "note": note}
 
     @router.post("/api/usage-history/{job_id}/visibility")
     async def usage_history_visibility(job_id: str, request: Request):

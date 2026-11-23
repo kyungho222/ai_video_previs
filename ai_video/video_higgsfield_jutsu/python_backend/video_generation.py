@@ -103,6 +103,7 @@ TERMINAL = ("completed", "failed")
 from . import video_preparation, video_results
 from .video_preparation import verified_guide_inputs
 from .video_results import LostLease
+from .stage_usage import STAGE_USAGE_SINK as VIDEO_USAGE_SINK
 from .video_routes import create_video_router
 
 
@@ -427,6 +428,11 @@ class VideoManager:
 
     async def run(self, job_id, owner):
         def update(**values):
+            if 'metadata' in values:
+                existing = self.store.get(job_id)['metadata'].get('ai_usage', [])
+                incoming = values['metadata'].get('ai_usage', [])
+                receipts = {row['id']: row for row in [*existing, *incoming] if row.get('id')}
+                values['metadata'] = {**values['metadata'], 'ai_usage': list(receipts.values())}
             if not self.store.update(job_id, owner=owner, **values):
                 raise LostLease()
             state = values.get("state")
@@ -449,6 +455,13 @@ class VideoManager:
         reference = folder / (owner + "-previs.mp4")
         candidate = folder / (owner + "-wan.mp4")
 
+        def capture_analysis_usage(row):
+            current = self.store.get(job_id)
+            metadata = current['metadata']
+            rows = [item for item in metadata.get('ai_usage', []) if item.get('id') != row.get('id')]
+            update(metadata={**metadata, 'ai_usage': [*rows, row]})
+
+        usage_token = VIDEO_USAGE_SINK.set(capture_analysis_usage)
         try:
             client = self.adapter_for(options)
             folder.mkdir(parents=True, exist_ok=True)
@@ -484,6 +497,8 @@ class VideoManager:
                              job_id, type(error).__name__, log_message(message))
                 self.store.update(job_id, owner=owner, state="failed", message=message, lease=0)
         finally:
+            VIDEO_USAGE_SINK.reset(usage_token)
+            video_results.finalize_video_usage(self, job_id)
             pulse.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await pulse
@@ -499,7 +514,8 @@ class VideoManager:
             trust_env=False,
         ) as http:
             return await request_openai(
-                http, api_key, path, body, lambda *args: None, stage_label="영상 프롬프트·품질 검증"
+                http, api_key, path, body, lambda *args: None, stage_label="영상 프롬프트·품질 검증",
+                usage_sink=VIDEO_USAGE_SINK.get(),
             )
 
     async def _prepare_submission(self, job, owner, reference, folder, update):

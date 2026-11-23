@@ -70,8 +70,16 @@ def chat_payload(body, route):
     fmt = body.get('text',{}).get('format',{})
     if fmt.get('type') == 'json_schema':
         schema = {key:fmt[key] for key in ('name','schema','strict') if key in fmt}
-        if route.provider in ('deepseek','moonshot','kimi'):
-            messages.insert(0,{'role':'system','content':'Return only JSON matching this schema: ' + json.dumps(fmt['schema'],ensure_ascii=False)})
+        if route.options.get('schema_mode') == 'json_object' or route.provider in ('deepseek','moonshot','kimi'):
+            contract = ('\nReturn a JSON INSTANCE containing actual result values for the task above. '
+                        'Do not return the schema, field definitions, examples, or explanations. '
+                        'The following schema describes the required output shape only:\n'
+                        + json.dumps(fmt['schema'], ensure_ascii=False))
+            if route.options.get('schema_mode') == 'json_object' and messages and messages[0]['role'] == 'system':
+                # Some local chat templates discard or confuse consecutive system messages.
+                messages[0] = {**messages[0], 'content': messages[0]['content'] + contract}
+            else:
+                messages.insert(0, {'role': 'system', 'content': contract})
             payload['response_format'] = {'type':'json_object'}
         else:
             payload['response_format'] = {'type':'json_schema','json_schema':schema}

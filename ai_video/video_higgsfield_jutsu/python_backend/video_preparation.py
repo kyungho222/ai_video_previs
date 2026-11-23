@@ -19,6 +19,7 @@ from .video_errors import MAX_REFERENCE_BYTES, VideoError, PromptLengthError
 from .video_media import inspect_video
 from .reference_audio import upload_reference_audio
 from .bgm import VOICE_ONLY
+from .scene_flow import FIRST_SCENE_CONTINUITY, SCENE_FLOW_RULES, continuous_guides
 from .creative_policy import KOREAN_ATMOSPHERE_RULE
 from .video_prompt import (
     PROMPT_POLICY_VERSION,
@@ -70,6 +71,7 @@ def verified_guide_inputs(mode, spatial_input, guides, asset_count, image_limit)
 async def _prepare_submission(self, job, owner, reference, folder, update):
     job_id = job["id"]
     options = job["options"]
+    scene_flow = options.get("sceneFlowPolicy")
     api_key = self.service.config.get("OPENAI_API_KEY")
     review_model = video_analysis_model(self.service, options)
     presentation = job.get("metadata", {}).get("promptFilter", {}).get("generationRules", "")
@@ -184,10 +186,11 @@ async def _prepare_submission(self, job, owner, reference, folder, update):
         if transcript.get("sourceSha256") and transcript["sourceSha256"] != metadata["sourceIdentity"]["sha256"]:
             raise VideoError("카메라 분석 원본과 선택한 프리비즈 MP4가 다릅니다.")
         metadata["previsTranscript"] = transcript
-        metadata["inputPolicy"] = "camera-text-endpoints-v1"
+        metadata["inputPolicy"] = scene_flow or "camera-text-endpoints-v1"
         camera_transcript = timeline_prompt(transcript["plan"], transcript["sourceDuration"],
-                                            options["duration"])
-        update(metadata=metadata, message="촬영 타임라인 분석 완료 · 시작·종료 이미지를 구성합니다.")
+                                            options["duration"], scene_flow_policy=scene_flow)
+        update(metadata=metadata, message=("촬영 타임라인 분석 완료 · 씬 참조 이미지를 구성합니다."
+                                          if scene_flow else "촬영 타임라인 분석 완료 · 시작·종료 이미지를 구성합니다."))
     if comparison == "A":
         update(message="캐릭터 참조 이미지를 멤버별로 준비합니다.")
         guide_directory.mkdir(parents=True, exist_ok=True)
@@ -231,6 +234,8 @@ async def _prepare_submission(self, job, owner, reference, folder, update):
             update=update,
         )
         guide_context = spatial_prompt_context(bundle, spatial_input)
+        if scene_flow == FIRST_SCENE_CONTINUITY:
+            guide_context.update(sceneFlowPolicy=scene_flow, sceneFlowRules=SCENE_FLOW_RULES)
         if spatial_input != "references":
             generation_prompt = scene_text_without_asset_indices(generation_prompt, bundle)
             scene_prompt = scene_text_without_asset_indices(scene_prompt, bundle)
@@ -264,7 +269,8 @@ async def _prepare_submission(self, job, owner, reference, folder, update):
     prompt_mode = "images" if spatial else mode
     spatial_suffix = ""
     if spatial and (sends_video or comparison != "B" or not bundle["guides"]):
-        spatial_suffix = bind_spatial_prompt("", bundle, len(asset_files), spatial_input, sends_video)
+        spatial_suffix = bind_spatial_prompt("", bundle, len(asset_files), spatial_input, sends_video,
+                                            *([scene_flow] if scene_flow else []))
     extra_rules_length = len(CAMERA_GUIDE_RULES) + 2 if separated else 0
     shared_overhead = reference_prompt_overhead(
         prompt_assets, duration=options["duration"], reference_mode=prompt_mode,
@@ -283,6 +289,7 @@ async def _prepare_submission(self, job, owner, reference, folder, update):
             options["duration"], request=optimize_request if api_key else None, model=review_model,
             max_chars=camera_budget, cached=metadata.get("promptTimeline"), save=save_camera_budget,
             check_owner=direction_owner_check, progress=lambda message: update(message=message),
+            scene_flow_policy=scene_flow,
         )
         camera_transcript = compacted["text"]
         metadata["promptTimeline"] = compacted
@@ -351,7 +358,8 @@ async def _prepare_submission(self, job, owner, reference, folder, update):
         metadata["optimizedBasePrompt"] = prepared["prompt"]
         if sends_video or comparison != "B" or not metadata["identityComparison"]["comparable"]:
             prepared["prompt"] = bind_spatial_prompt(
-                prepared["prompt"], bundle, len(asset_files), spatial_input, sends_video
+                prepared["prompt"], bundle, len(asset_files), spatial_input, sends_video,
+                *([scene_flow] if scene_flow else [])
             )
     reference_rules = ((camera_transcript,) if camera_transcript else
                        (PREVIS_RULES, CAMERA_GUIDE_RULES) if separated else
@@ -359,6 +367,8 @@ async def _prepare_submission(self, job, owner, reference, folder, update):
     if presentation:
         reference_rules = (*reference_rules, presentation)
         prepared["prompt"] = attach_presentation_rules(prepared["prompt"], presentation)
+    if scene_flow == FIRST_SCENE_CONTINUITY:
+        reference_rules = (*reference_rules, SCENE_FLOW_RULES)
     if character_contract:
         reference_rules = (*reference_rules, character_contract)
         prepared["prompt"] = preserve_character_direction(prepared["prompt"], character_contract, None)
@@ -398,9 +408,13 @@ async def _prepare_submission(self, job, owner, reference, folder, update):
     if character_contract:
         prepared["prompt"] = preserve_character_direction(prepared["prompt"], character_contract, None)
     prepared["prompt"] = attach_presentation_rules(prepared["prompt"], presentation)
+    if scene_flow == FIRST_SCENE_CONTINUITY and SCENE_FLOW_RULES not in prepared["prompt"]:
+        prepared["prompt"] += "\n\n" + SCENE_FLOW_RULES
     required_texts = [value for item in direction["cast"]
                       for value in (item["character_id"], item["voice_profile_id"])]
     required_texts += [entry["text"] for entry in (direction["plan"] or {}).get("dialogues", [])]
+    if scene_flow == FIRST_SCENE_CONTINUITY:
+        required_texts.append(SCENE_FLOW_RULES)
     if presentation:
         required_texts.append(presentation)
     if camera_transcript:
@@ -619,6 +633,11 @@ async def _prepare_spatial_guides(
             )
             metadata["spatialSelectionLog"] = report
         metadata["spatialGuides"] = value
+        if options.get("sceneFlowPolicy") == FIRST_SCENE_CONTINUITY and any(
+            guide["index"] == 0 and guide["status"] == "excluded" for guide in value["guides"]
+        ):
+            update(metadata=metadata)
+            raise GuideError("첫 씬 기준 이미지 검증 실패로 후속 이미지 생성을 중단했습니다.")
         expected = len(report["scenes"]) if report else options.get("spatialGuideCount", 3)
         verified = sum(item["status"] == "verified" for item in value["guides"])
         repairing = any(
@@ -631,7 +650,8 @@ async def _prepare_spatial_guides(
         else:
             message = f"공간 가이드 생성·검증 {verified}/{expected}"
         if options.get("previsTranscript"):
-            message = message.replace("공간 가이드", "시작·종료 이미지")
+            message = message.replace("공간 가이드", "씬 참조 이미지"
+                                      if options.get("sceneFlowPolicy") else "시작·종료 이미지")
         update(metadata=metadata, message=message)
 
     builder = SpatialGuideBuilder(
@@ -651,6 +671,8 @@ async def _prepare_spatial_guides(
     scenario_guides = [
         {key: scene[key] for key in ("index", "title", "fraction")} for scene in scenario_guides
     ]
+    if options.get("sceneFlowPolicy") == FIRST_SCENE_CONTINUITY and scenario_guides:
+        scenario_guides[0] = {**scenario_guides[0], "fraction": 0.0}
     bundle = await builder.build(
         reference,
         asset_files,
@@ -660,7 +682,7 @@ async def _prepare_spatial_guides(
         brief=scene_prompt + "\n" + generation_prompt + (
             "\n" + timeline_prompt(metadata["previsTranscript"]["plan"],
                                     metadata["previsTranscript"]["sourceDuration"],
-                                    options["duration"])
+                                    options["duration"], scene_flow_policy=options.get("sceneFlowPolicy"))
             if options.get("previsTranscript") else ""
         ),
         scene_manifest=native,
@@ -669,7 +691,12 @@ async def _prepare_spatial_guides(
         selection=options.get("spatialGuideSelection", "uniform"),
         **({"scenario_frames": scenario_guides} if scenario_guides else {}),
     )
-    if options.get("previsTranscript"):
+    if options.get("sceneFlowPolicy") == FIRST_SCENE_CONTINUITY:
+        try:
+            accepted = continuous_guides(bundle["guides"])
+        except ValueError as error:
+            raise GuideError("첫 씬 기준 이미지를 검증하지 못했습니다. 후속 씬을 첫 장면으로 대체하지 않습니다.") from error
+    elif options.get("previsTranscript"):
         try:
             accepted, warnings = endpoint_guides(bundle["guides"])
         except ValueError as error:

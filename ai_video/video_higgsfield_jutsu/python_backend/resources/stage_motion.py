@@ -510,9 +510,12 @@ def _previs_validate_visibility(requirements=None):
     if not roots:
         return {"checked": False, "reason": "No registered subjects", "subjects": []}
 
+    focus_intervals = json.loads(camera.get("previs_focus_intervals", "[]"))
+    active_names = None
+
     def is_subject(obj):
         while obj is not None:
-            if obj in roots:
+            if obj in roots and (active_names is None or obj.name in active_names):
                 return True
             obj = obj.parent
         return False
@@ -599,9 +602,16 @@ def _previs_validate_visibility(requirements=None):
     try:
         for frame in range(scene.frame_start, scene.frame_end + 1):
             scene.frame_set(frame)
+            if focus_intervals:
+                active_names = {name for interval in focus_intervals
+                                if interval["start"] <= frame <= interval["end"]
+                                for name in interval["subjects"]}
             origin = center(camera)
             for index, subject in enumerate(subjects):
                 record = results[index]
+                if active_names is not None and subject["root"].name not in active_names:
+                    runs[index] = 0
+                    continue
                 points = body_points(subject)
                 if not points:
                     continue

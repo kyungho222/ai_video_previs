@@ -17,6 +17,7 @@ from fastapi import (
 from fastapi.responses import FileResponse
 from .media_archive import MediaExpired, ArchiveError
 from .pipeline_log import log_request, logger
+from .scene_flow import FIRST_SCENE_CONTINUITY
 from .spatial_guides import spatial_guide_budget
 from .video_errors import UUID, MAX_AUDIO_BYTES, MAX_IMAGE_BYTES, AssetError, VideoError
 from .video_media import LimitedUploadRoute, inspect_video, create_previs_upload_router
@@ -287,6 +288,9 @@ def create_video_router(service):
             options["chatModel"] = chat_model
         if work_settings:
             options["workSettings"] = work_settings
+        options['usageLogEnabled'] = body.get('usageLogEnabled') is True
+        options['usageDbName'] = body.get('db_name')
+        options['usageRequestId'] = request.state.pipeline_id
         options["scenePrompt"] = manager.scene_prompt(source)
         requested_mode = body.get("referenceMode", "auto")
         if requested_mode == "auto":
@@ -299,6 +303,7 @@ def create_video_router(service):
                     else (
                         "compare_references"
                         if previous_comparison == "A"
+                        else "text_continuity" if previous_options.get("sceneFlowPolicy") == FIRST_SCENE_CONTINUITY
                         else "text_endpoints" if previous_options.get("previsTranscript")
                         else previous_options.get("referenceMode", "video")
                     )
@@ -312,6 +317,7 @@ def create_video_router(service):
         if type(include_video) is not bool:
             raise HTTPException(400, detail="MP4 전달 설정을 확인하세요.")
         mode_aliases = {
+            "text_continuity": "spatial",
             "text_endpoints": "spatial",
             "compare_references": "video" if include_video else "images",
             "compare_first_frame": "spatial_motion" if include_video else "spatial",
@@ -323,14 +329,17 @@ def create_video_router(service):
             "spatial",
             "spatial_motion",
             "text_endpoints",
+            "text_continuity",
             "compare_references",
             "compare_first_frame",
         ):
             raise HTTPException(400, detail="참고 입력 방식을 확인하세요.")
         mode = mode_aliases.get(requested_mode, requested_mode)
         text_endpoints = requested_mode == "text_endpoints"
-        if text_endpoints:
+        if text_endpoints or requested_mode == "text_continuity":
             options["previsTranscript"] = "camera_timeline_v1"
+        if requested_mode == "text_continuity":
+            options["sceneFlowPolicy"] = FIRST_SCENE_CONTINUITY
         if requested_mode in ("compare_references", "compare_first_frame"):
             if not service.config.get("OPENAI_API_KEY"):
                 raise HTTPException(
@@ -387,6 +396,7 @@ def create_video_router(service):
                 )
             spatial_input = (
                 "first_last" if text_endpoints else
+                "references" if requested_mode == "text_continuity" else
                 ("references" if include_video else "first_frame")
                 if options.get("identityComparison") == "B"
                 else body.get("spatialInput", "references")
@@ -408,7 +418,9 @@ def create_video_router(service):
                         2
                         if spatial_input == "first_last"
                         else spatial_guide_budget(
-                            len(assets), count, image_limit=capabilities.reference_image_limit
+                            len(assets), min(3, capabilities.reference_image_limit - len(assets))
+                            if requested_mode == "text_continuity" and count == "auto" else count,
+                            image_limit=capabilities.reference_image_limit
                         )
                     )
                 )
@@ -428,7 +440,8 @@ def create_video_router(service):
             previous = manager.store.get(request_id)
             if previous is None or "spatialGuideSelection" in previous["options"]:
                 options["spatialGuideSelection"] = (
-                    previous["options"]["spatialGuideSelection"] if previous else "key_scenes_v1"
+                    previous["options"]["spatialGuideSelection"] if previous else
+                    "uniform" if requested_mode == "text_continuity" else "key_scenes_v1"
                 )
         try:
             validate_video_input(

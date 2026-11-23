@@ -1,12 +1,14 @@
 """HTTP routes for generating shortform scenarios."""
 
 import time
+from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Request
 
 from .pipeline_log import log_request, logger
 from .prompt_filter import PromptFilterError
 from .shortform_scenario import generate_scenario
+from .stage_usage import submit_stage_usage
 from .work_settings import request_work_metadata, effective_chat_model
 
 
@@ -56,26 +58,46 @@ def create_shortform_router(service):
         except ValueError as error:
             raise HTTPException(400, detail=str(error)) from None
         request_id = request.state.pipeline_id
-        started = time.monotonic()
+        session_id = str(uuid4())
+        scenario_job_id = str(uuid4())
+        usage_rows = []
+        usage_context = {
+            **request_work_metadata(body), 'usageLogEnabled': body.get('usageLogEnabled') is True,
+            'job_id': scenario_job_id, 'session_id': session_id,
+            'request_id': request_id, 'job_type': 'scenario_generation',
+        }
+        def capture_usage(row):
+            usage_rows.append(row)
+        stage_state = 'failed'
         try:
-            async with service.slots:
-                result = await generate_scenario(
-                    title=title.strip(), summary=summary.strip(), model=model,
-                    api_key=service.config.get("OPENAI_API_KEY"), transport=service.transport,
-                    request_id=request_id,
-                )
-        except PromptFilterError as error:
-            raise HTTPException(error.status_code, detail=str(error)) from None
-        except RuntimeError as error:
-            raise HTTPException(502, detail=str(error)) from None
-        logger.info("[요청 %s] 시나리오 생성 완료 · 씬 %d개 · %.2f초",
-                    request_id, len(result["scenes"]), time.monotonic() - started)
-        result["sessionId"] = service.scenarios.save({
-            "title": title.strip(), "summary": summary.strip(), "scenes": result["scenes"],
-            "settings": {"model": model, "db_name": body.get("db_name", ""),
-                         "chatbotid": body.get("chatbotid", "")},
-        })
-        return result
+            started = time.monotonic()
+            try:
+                async with service.slots:
+                    result = await generate_scenario(
+                        title=title.strip(), summary=summary.strip(), model=model,
+                        api_key=service.config.get("OPENAI_API_KEY"), transport=service.transport,
+                        request_id=request_id,
+                        usage_sink=capture_usage,
+                    )
+            except PromptFilterError as error:
+                raise HTTPException(error.status_code, detail=str(error)) from None
+            except RuntimeError as error:
+                raise HTTPException(502, detail=str(error)) from None
+            logger.info("[요청 %s] 시나리오 생성 완료 · 씬 %d개 · %.2f초",
+                        request_id, len(result["scenes"]), time.monotonic() - started)
+            result["sessionId"] = service.scenarios.save({
+                "job_id": scenario_job_id,
+                "title": title.strip(), "summary": summary.strip(), "scenes": result["scenes"],
+                "settings": {"model": model, "db_name": body.get("db_name", ""),
+                             "chatbotid": body.get("chatbotid", "")},
+            }, session_id=session_id)
+            result['job_id'] = scenario_job_id
+            result['ai_usage'] = [{**row, 'job_id': scenario_job_id, 'session_id': session_id, 'request_id': request_id,
+                                   'job_type': 'scenario_generation'} for row in result.get('ai_usage', [])]
+            stage_state = 'completed'
+            return result
+        finally:
+            submit_stage_usage(service.usage_database, usage_rows, usage_context, state=stage_state)
 
     @router.put("/scenario/{session_id}")
     async def update_scenario(session_id: str, request: Request):

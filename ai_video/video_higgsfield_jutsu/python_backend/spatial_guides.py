@@ -13,6 +13,7 @@ import httpx
 from PIL import Image, ImageOps
 from .video_errors import VideoError
 from .video_prompt import PREVIS_RULES
+from .scene_flow import FIRST_SCENE_CONTINUITY, SCENE_FLOW_RULES
 from .prompt_filter import MODEL_INPUT_GUARD, attach_presentation_rules
 
 GUIDE_VERSION = "spatial-guides-v2"
@@ -32,7 +33,7 @@ def entity_original_refs(bundle, entity):
     return [parts[index - 1] for index in entity["assetIndices"]]
 
 
-def spatial_prompt_context(bundle, input_format):
+def spatial_prompt_context(bundle, input_format, *, scene_flow_policy=None):
     entities = []
     for entity in bundle["mapping"]["entities"]:
         item = {key: entity[key] for key in ("id", "label", "appearance")}
@@ -48,6 +49,8 @@ def spatial_prompt_context(bundle, input_format):
                 item["assetRegions"] = regions
         entities.append(item)
     return {
+        **({"sceneFlowPolicy": scene_flow_policy, "sceneFlowRules": SCENE_FLOW_RULES}
+           if scene_flow_policy == FIRST_SCENE_CONTINUITY else {}),
         "inputFormat": input_format,
         "entities": entities,
         "cameraSummary": bundle["mapping"]["cameraSummary"],
@@ -70,7 +73,7 @@ def scene_text_without_asset_indices(text, bundle):
     )
 
 
-def bind_spatial_prompt(prompt, bundle, asset_count, input_format, motion_enabled):
+def bind_spatial_prompt(prompt, bundle, asset_count, input_format, motion_enabled, scene_flow_policy=None):
     lines = [
         "SPATIAL IMAGE AND CAMERA REFERENCE ROLES",
         "Spatial images establish appearance, environment identity and an initial composition. "
@@ -78,7 +81,11 @@ def bind_spatial_prompt(prompt, bundle, asset_count, input_format, motion_enable
         "Follow the reference camera viewpoint progression and camera travel. Preserve character root positions, travel paths/directions, relative formations and major event timing when a previs video is supplied. Independently reconstruct natural detailed articulation and reactions around that staging, respecting explicit current user changes.",
     ]
     if input_format == "references":
-        for image_number, guide in enumerate(bundle["guides"], asset_count + 1):
+        for image_number, guide in enumerate(sorted(bundle["guides"], key=lambda item: item["index"]), asset_count + 1):
+            if scene_flow_policy == FIRST_SCENE_CONTINUITY:
+                role = "OPENING STATE ANCHOR" if guide["index"] == 0 else "LATER SCENE INTENT REFERENCE"
+                lines.append(f"Image {image_number}: {role} near {guide['time']:.2f}s; same cast. Later positions and poses are not mandatory resets.")
+                continue
             lines.append(
                 f"Image {image_number}: asset-based spatial composition near {guide['time']:.2f}s of the planning reference; same entities, not extra characters. Its pose is not a mandatory motion keyframe."
             )
@@ -105,6 +112,8 @@ def bind_spatial_prompt(prompt, bundle, asset_count, input_format, motion_enable
     lines.append("Camera/staging intent: " + bundle["mapping"]["cameraSummary"])
     if motion_enabled and PREVIS_RULES not in prompt:
         lines.append(PREVIS_RULES)
+    if scene_flow_policy == FIRST_SCENE_CONTINUITY:
+        lines.append(SCENE_FLOW_RULES)
     return prompt + "\n\n" + "\n".join(lines)
 
 
@@ -634,6 +643,17 @@ class OpenAIGuideImageEditor:
                 headers={"Authorization": "Bearer " + self.api_key},
                 json={**body, "model": self.model},
             )
+        from .ai_usage import report_usage, usage_row
+        from .stage_usage import STAGE_USAGE_SINK
+        try:
+            usage_response = response.json()
+        except ValueError:
+            usage_response = {}
+        receipt = usage_row('openai', self.model, usage_response,
+                            status='completed' if response.is_success else 'failed',
+                            provider_request_id=response.headers.get('x-request-id'))
+        if receipt is not None:
+            report_usage(STAGE_USAGE_SINK.get(), {**receipt, 'modality': 'image'})
         if not response.is_success:
             raise GuideError(f"공간 가이드 이미지 생성 실패 (HTTP {response.status_code}).")
         try:
@@ -1159,6 +1179,14 @@ class SpatialGuideBuilder:
                 entry.update(name=f"spatial-{index}.png", status="pending")
                 bundle["guides"].append(entry)
             target = directory / entry["name"]
+            previous = next((item for item in bundle["guides"]
+                             if item["index"] == index - 1 and item.get("status") == "verified"), None)
+            previous_path = directory / previous["name"] if previous else None
+            if previous_path is not None and (
+                not previous_path.is_file()
+                or hashlib.sha256(previous_path.read_bytes()).hexdigest() != previous.get("sha256")
+            ):
+                raise GuideError("직전 씬의 공간 가이드 이미지가 변경되거나 누락되었습니다.")
             while entry["status"] not in ("excluded", "unknown", "requesting"):
                 if (
                     entry["status"] == "invalid"
@@ -1209,14 +1237,17 @@ class SpatialGuideBuilder:
                     visible_assets = [
                         (i, asset) for i, asset in enumerate(assets, 1) if i in visible_indices
                     ]
-                    if len(visible_assets) > 14:
-                        # Keep room for the layout and a previous image on repair requests.
+                    asset_limit = 13 if previous_path else 14
+                    if len(visible_assets) > asset_limit:
+                        # Reserve layout, preceding scene, and rejected candidate on repair.
                         parent_indices = sorted(
                             {asset["sourceIndex"] for _, asset in visible_assets}
                         )
                         visible_assets = [
                             (number, original_assets[number - 1]) for number in parent_indices
                         ]
+                        if len(visible_assets) > asset_limit:
+                            raise GuideError("공간 가이드의 에셋 수가 이미지 참조 한도를 초과합니다.")
                         edit_indices = {
                             index: parent_indices.index(assets[index - 1]["sourceIndex"]) + 2
                             for index in visible_indices
@@ -1243,7 +1274,7 @@ class SpatialGuideBuilder:
                     prompt = (
                         "Edit Image 1 as an exact camera-layout reconstruction at this SINGLE instant. "
                         "Image 1 is the authoritative layout: preserve its viewpoint, subject center coordinates, bounding-box scale, orientation, supports, contact and occlusion. "
-                        "Other input images supply appearance only, NEVER their subject scale, position, pose or background layout. "
+                        "Original asset images supply appearance only, NEVER their subject scale, position or pose. "
                         "Rebuild visible entities with the mapped asset anatomy/materials; remove wooden/proxy shapes and make a coherent environment. "
                         "Keep a perched animal perched if perched in Image 1. Do not execute later actions or invent a more dramatic composition. "
                         "Use the scene brief for the location and action at this timestamp; mapped appearance fields define the visible entities. "
@@ -1277,16 +1308,18 @@ class SpatialGuideBuilder:
                         "n": 1,
                         "background": "opaque",
                     }
-                    if input_format == "first_last" and index == 1:
-                        first = next((guide for guide in bundle["guides"] if guide["index"] == 0), None)
-                        first_path = directory / first["name"] if first and first.get("name") else None
-                        if first_path and first_path.is_file() and len(body["images"]) < 15:
-                            body["images"].append({"image_url": image_data_url(first_path)})
-                            body["prompt"] += (
-                                f" Image {len(body['images'])} is the completed opening frame. "
-                                "Maintain its character identities, wardrobe, environment and lighting in this final frame. "
-                                "Keep Image 1 authoritative for the final camera viewpoint, positions, scale and occlusion."
-                            )
+                    if previous_path:
+                        body["images"].append({"image_url": image_data_url(previous_path)})
+                        body["prompt"] += (
+                            f" Image {len(body['images'])} is the PREVIOUS SCENE continuity reference. "
+                            "Inherit its actual environment architecture, landmarks, materials, lighting, wardrobe, "
+                            "prop identity and physical state. Evolve character positions, facing, contacts and camera "
+                            "naturally toward the CURRENT Image 1 layout and action phase; do not freeze or copy "
+                            "the previous pose or reset the environment. Original assets remain authoritative for identity. "
+                            "Allow explicit location changes, cuts and time jumps stated in the scene brief; "
+                            "otherwise preserve the same connected space and persistent objects."
+                        )
+                        entry["continuityReference"] = {"index": previous["index"], "sha256": previous["sha256"]}
                     if entry.get("verification"):
                         body["prompt"] += (
                             " REPAIR INSTRUCTIONS: Compare the original layout (Image 1) with the rejected last image. "
@@ -1321,23 +1354,25 @@ class SpatialGuideBuilder:
                             VERIFY_SCHEMA,
                             "Verify the edited guide: first image=rough layout, next "
                             + str(len(assets))
-                            + "=assets, final image=generated spatial guide. "
+                            + "=assets, then an optional previous-scene reference, final image=generated spatial guide. "
                             "Check only entities expected visible in this frame; preserve hidden/offscreen state. Judge asset identity/proportions/materials, camera composition/positions, removal of proxy geometry, and intended cast count. "
                             "A textured proxy or extra mannequin is a failure. Do not require an off-screen entity to appear. For each issue specify the correction needed from the original layout, including perspective and overlap when relevant. "
                             "Check locationContinuityPreserved against the scene brief and source layout: retain the indoor/outdoor "
-                            "location and connected doorways at this timestamp. For the ending frame use any supplied opening-frame "
-                            "reference to preserve the same connected environment. Check sceneStatePreserved for the exact action phase, "
+                            "location and connected doorways at this timestamp. Use the previous-scene reference, when present, "
+                            "to check architecture, landmarks, lighting and persistent prop continuity. Allow explicit location changes "
+                            "and time jumps in the brief. Do not require identical screen positions or poses: use the current layout "
+                            "and action phase to judge natural state progression. Check sceneStatePreserved for the exact action phase, "
                             "cast positions, carrying/supporting contacts and prop/lid state; a carrier standing outside a bin remains outside. "
                             "Identify the specific image correction for a disagreement. Keep the source action sequence intact. "
                             "Mapping and frame: "
                             + json.dumps(
                                 {"mapping": bundle["mapping"], "index": index, "time": frame["time"],
-                                 "sceneBrief": brief, "openingFrameIncluded": input_format == "first_last" and index == 1},
+                                 "sceneBrief": brief, "previousSceneIncluded": previous_path is not None,
+                                 "previousSceneIndex": previous["index"] if previous else None},
                                 ensure_ascii=False,
                             ),
                             [frame["path"]] + [Path(asset["path"]) for asset in assets]
-                            + ([directory / next(guide["name"] for guide in bundle["guides"] if guide["index"] == 0)]
-                               if input_format == "first_last" and index == 1 else [])
+                            + ([previous_path] if previous_path else [])
                             + [target],
                         )
                         if not isinstance(verification, dict) or not isinstance(
