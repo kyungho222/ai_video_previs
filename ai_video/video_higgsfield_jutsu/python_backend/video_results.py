@@ -10,8 +10,10 @@ from .video_errors import AssetError, VideoError
 
 from .video_validation import validate_video_result
 from .ai_usage import TERMINAL_VIDEO_STATES, report_usage, usage_row
+from .stage_usage import submit_stage_usage
 from .work_settings import video_analysis_model
 from .bgm import mix_background_music
+from .camera_reference import source_scene_reference
 
 
 TERMINAL = ("completed", "failed")
@@ -19,6 +21,30 @@ TERMINAL = ("completed", "failed")
 
 class LostLease(Exception):
     pass
+
+
+def finalize_video_usage(self, job_id):
+    """Publish one receipt per model only after the local video job is terminal."""
+    try:
+        current = self.store.get(job_id)
+        if not current or current.get('state') not in TERMINAL:
+            return
+        options = current['options']
+        if options.get('usageLogEnabled') is not True:
+            return
+        source_id = current.get('source', {}).get('jobId')
+        source = self.service.usage_history.get(source_id) if source_id else None
+        source = source or source_scene_reference(self.service, current.get('source', {})) or {}
+        submit_stage_usage(self.service.usage_database, current['metadata'].get('ai_usage', []), {
+            **(options.get('workSettings') or source.get('workSettings') or {}),
+            'db_name': options.get('usageDbName', (options.get('workSettings') or source.get('workSettings') or {}).get('db_name')),
+            'usageLogEnabled': options.get('usageLogEnabled') is True,
+            'job_id': job_id, 'source_job_id': source_id, 'session_id': source.get('sessionId'),
+            'request_id': options.get('usageRequestId'), 'job_type': 'video_generation',
+        }, state=current['state'])
+    except Exception as error:
+        logging.getLogger('uvicorn.error').warning(
+            '[사용량 DB] 영상 집계 지연 · job=%s · %s', job_id, type(error).__name__)
 
 async def _review_completed_video(self, job, owner, reference, candidate, folder, update):
     job_id = job["id"]
@@ -62,6 +88,7 @@ async def _review_completed_video(self, job, owner, reference, candidate, folder
         submitted_prompt=current["metadata"].get("submittedPrompt", ""),
         cached=current["metadata"].get("outputValidation"),
         critical_moments=critical_moments,
+        scene_flow_policy=options.get("sceneFlowPolicy"),
         character_direction={key: current["metadata"]["characterDirection"][key]
                              for key in ("status", "cast", "plan")}
                             if current["metadata"].get("characterDirection") else None,
@@ -86,9 +113,18 @@ async def _wait_for_result(self, job, owner, reference, candidate, folder, updat
     deadline = time.monotonic() + 1200
 
     def save_usage(row):
+        source_id = job.get('source', {}).get('jobId')
+        try:
+            source = self.service.usage_history.get(source_id) if source_id else None
+            source = source or source_scene_reference(self.service, job.get('source', {})) or {}
+            row = {**row, 'session_id': source.get('sessionId')}
+
+        except Exception as error:
+            logging.getLogger('uvicorn.error').warning(
+                '[사용량 DB] 영상 연결 정보 확인 실패 · job=%s · %s', job_id, type(error).__name__)
         metadata = self.store.get(job_id)["metadata"]
-        if not metadata.get("ai_usage"):
-            update(metadata={**metadata, "ai_usage": [row]})
+        rows = [item for item in metadata.get("ai_usage", []) if item.get("id") != row.get("id")]
+        update(metadata={**metadata, "ai_usage": [*rows, row]})
 
     while True:
         result = await client.poll(job["provider_id"], options["region"])
@@ -113,11 +149,13 @@ async def _wait_for_result(self, job, owner, reference, candidate, folder, updat
                 raise LostLease()
             logging.getLogger("uvicorn.error").info("[작업 %s] 영상 생성 완료", job_id)
             self.result_asset(self.store.get(job_id))
+            finalize_video_usage(self, job_id)
             return
         if state in ("FAILED", "CANCELED", "UNKNOWN"):
             message = client.failure_message(result)
             metadata = {**self.store.get(job_id)["metadata"], "providerError": message}
             update(state="failed", message=message, metadata=metadata, lease=0)
+            finalize_video_usage(self, job_id)
             return
         if state not in ("PENDING", "RUNNING") or time.monotonic() > deadline:
             raise VideoError(

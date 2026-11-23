@@ -68,6 +68,20 @@ class TimelineTests(unittest.TestCase):
                 repeated = client.post('/api/video/generate', json=body)
                 self.assertEqual(repeated.status_code, 202, repeated.text)
                 self.assertEqual(repeated.json()['options'], options)
+                continuous_body = {**body, 'requestId': '42345678-1234-1234-1234-123456789abc',
+                                   'source': {'uploadedId': '52345678-1234-1234-1234-123456789abc'},
+                                   'referenceMode': 'text_continuity', 'spatialInput': 'first_last'}
+                continuous = client.post('/api/video/generate', json=continuous_body)
+                self.assertEqual(continuous.status_code, 202, continuous.text)
+                continuous_options = continuous.json()['options']
+                self.assertEqual(continuous_options['sceneFlowPolicy'], 'first-scene-continuity-v1')
+                self.assertEqual(continuous_options['spatialInput'], 'references')
+                self.assertEqual(continuous_options['spatialGuideCount'], 3)
+                retried_continuous = client.post('/api/video/generate', json={
+                    **continuous_body, 'referenceMode': 'auto',
+                })
+                self.assertEqual(retried_continuous.status_code, 202, retried_continuous.text)
+                self.assertEqual(retried_continuous.json()['options'], continuous_options)
                 legacy_body = {**body, 'requestId': '22345678-1234-1234-1234-123456789abc',
                                'source': {'uploadedId': '32345678-1234-1234-1234-123456789abc'},
                                'referenceMode': 'video', 'characterMotion': 'reference'}

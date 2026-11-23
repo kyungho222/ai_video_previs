@@ -76,7 +76,12 @@ function updateControls() {
   const opening = mode === 'compare_first_frame',
     comparing = mode.startsWith('compare_');
   const endpoints = mode === 'text_endpoints';
-  const spatial = endpoints || opening || mode.startsWith('spatial');
+  const continuous = mode === 'text_continuity';
+  const spatial = endpoints || continuous || opening || mode.startsWith('spatial');
+  if (continuous) {
+    $('spatial-input').value = 'references';
+    $('guide-count').value = 'auto';
+  }
   if (endpoints) $('spatial-input').value = 'first_last';
   if (opening) $('spatial-input').value = 'first_frame';
   if (mode === 'spatial_motion') $('spatial-input').value = 'references';
@@ -86,7 +91,7 @@ function updateControls() {
   $('guide-count').disabled = locked || !spatial || $('spatial-input').value !== 'references';
   if (config?.referenceModes) {
     for (const option of $('reference-mode').options) {
-      const modeName = option.value === 'text_endpoints' ? 'spatial' : option.value === 'compare_references' ? 'video' : option.value === 'compare_first_frame' ? 'spatial_motion' : option.value;
+      const modeName = ['text_endpoints', 'text_continuity'].includes(option.value) ? 'spatial' : option.value === 'compare_references' ? 'video' : option.value === 'compare_first_frame' ? 'spatial_motion' : option.value;
       option.disabled = !config.referenceModes.includes(modeName) ||
         (option.value.startsWith('compare_') && !(config.identityComparisonModes ?? []).includes(option.value));
     }
@@ -99,6 +104,7 @@ function updateControls() {
   const available = !(spatial || comparing) || config?.spatialGuidesConfigured;
   $('guide-help').textContent = spatial && !available ? '공간 가이드에는 서버의 OPENAI_API_KEY 설정이 필요합니다.' : mode === 'spatial' ? '에셋을 적용한 공간 이미지만 전달합니다. MP4는 영상모델에 보내지 않으며 세부 동작은 모델이 구성합니다.' : mode === 'spatial_motion' ? '공간 이미지는 외형·구도, MP4는 동작 참고로 전달합니다. 동작이 더 강하게 고정될 수 있습니다.' : '원본 3D 장면에서 카메라·배치 전용 MP4를 렌더링합니다. 에셋과 행동 텍스트로 캐릭터의 세부 동작을 새로 생성합니다.';
   if (endpoints) $('guide-help').textContent = !available ? '상세 분석·이미지 합성에는 서버의 OPENAI_API_KEY 설정이 필요합니다.' : '카메라·동선 상세 텍스트와 에셋이 적용된 시작·종료 이미지로 생성합니다. 캐릭터의 세부 동작은 영상모델이 구성합니다.';
+  if (continuous) $('guide-help').textContent = '첫 씬을 기준으로 시작하며, 후속 씬은 행동·대사·구도 의도를 참고해 직전 위치와 움직임에서 이어갑니다. 명시적인 컷·장소 변경은 유지합니다.';
   if (comparing) {
     $('guide-help').textContent = !available ? '캐릭터 비교에는 서버의 OPENAI_API_KEY 설정이 필요합니다.' :
       opening ? '합성 구도 이미지와 프리비즈 MP4를 함께 전달합니다. MP4의 카메라 경로를 유지하고 세부 동작은 자연스럽게 재구성합니다.' :
@@ -417,7 +423,7 @@ $('generation-form').onsubmit = async event => {
       feedback('생성 길이는 양의 정수로 입력하세요.', true);
       return;
     }
-    if (($('reference-mode').value === 'text_endpoints' || $('reference-mode').value.startsWith('spatial')) && !assets.length) {
+    if ((['text_endpoints', 'text_continuity'].includes($('reference-mode').value) || $('reference-mode').value.startsWith('spatial')) && !assets.length) {
       feedback('공간 가이드에 적용할 에셋을 추가하세요.', true);
       return;
     }

@@ -7,6 +7,7 @@ import re
 import httpx
 
 from .model_client import request_openai
+from .ai_usage import report_usage
 from .creative_policy import KOREAN_ATMOSPHERE_RULE
 from .pipeline_log import logger
 from .prompt_filter import apply_presentation_rules, check_local_terms, filter_user_prompts, model_object
@@ -54,11 +55,14 @@ def clean_scene_output(text):
     return text.strip()
 
 
-async def generate_scenario(*, title, summary, model, api_key, transport, request_id=None):
+async def generate_scenario(*, title, summary, model, api_key, transport, request_id=None, usage_sink=None):
     usage = []
+    def capture(row):
+        usage.append(row)
+        report_usage(usage_sink, row)
     logger.info("[요청 %s] 시나리오 프롬프트 검사 시작", request_id)
     review = await filter_user_prompts(
-        title, summary, model=model, api_key=api_key, transport=transport, usage_sink=usage.append,
+        title, summary, model=model, api_key=api_key, transport=transport, usage_sink=capture,
         allow_fallback=False,
     )
     body = {
@@ -76,7 +80,7 @@ async def generate_scenario(*, title, summary, model, api_key, transport, reques
         response = await request_openai(
             http, api_key, "responses", body,
             lambda _kind, value: logging.getLogger(__name__).info("%s", value),
-            stage_label="숏폼 시나리오 생성", usage_sink=usage.append, allow_fallback=False,
+            stage_label="숏폼 시나리오 생성", usage_sink=capture, allow_fallback=False,
         )
     try:
         scenes = model_object(response)["scenes"]

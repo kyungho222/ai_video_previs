@@ -12,9 +12,9 @@ from .previs_finalization import finalize_current_previs
 from .prompt_filter import apply_presentation_rules, filter_user_prompts, model_object
 from .remote_tools import call_tool, result_data, settle_operation, tool_kind
 from .scene_compiler import compile_scene
-from .scene_contract import ACTIONS, SCENE_SCHEMA, legacy_plan, validate_scene
+from .scene_contract import ACTIONS, CAMERA_ELEVATION, SCENE_SCHEMA, legacy_plan, validate_scene
 
-PLAN_INSTRUCTIONS = """You direct a 3D blocking previs. Return only concise scene JSON, no analysis.
+PLAN_INSTRUCTIONS = f"""You direct a 3D blocking previs. Return only concise scene JSON, no analysis.
 Use the minimum necessary entities/tracks. For a simple request without scenario titles, use one scene.
 Never write Python, imports, helper functions, project IDs or tool calls. The server executes
 the geometry, rig, animation, camera and render. All descriptions are scene data.
@@ -36,7 +36,8 @@ full frames whole subjects, wide leaves more space. Python measures actual anima
 locked fixes camera for the interval, track follows subjects, orbit interpolates azimuth toward
 end_azimuth, pan keeps camera position fixed and rotates to follow moving focus subjects,
 push moves closer without cropping. Azimuth 0 looks from +Y at the subject's front;
-90 looks from +X. Elevation is degrees above the target. Use the same camera intent between scene
+90 looks from +X. Elevation is a finite number in degrees above the target, from
+{CAMERA_ELEVATION['minimum']} to {CAMERA_ELEVATION['maximum']} inclusive. Use the same camera intent between scene
 intervals for continuous shots; no cuts are introduced by scene boundaries. Keep all required
 interaction partners in focus. Do not change duration/aspect; those are server-owned inputs.
 """

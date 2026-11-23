@@ -78,6 +78,18 @@ class UsageHistory:
             db.execute('DELETE FROM history_jobs WHERE job_id=?',(job_id,))
             db.execute('DELETE FROM history_hidden WHERE job_id=?',(job_id,))
 
+    def set_note(self, job_id, note):
+        with self.db() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row = db.execute('SELECT data FROM history_jobs WHERE job_id=?', (job_id,)).fetchone()
+            if row is None:
+                return False
+            record = json.loads(row['data'])
+            record['note'] = note
+            db.execute('UPDATE history_jobs SET data=? WHERE job_id=?',
+                       (json.dumps(record, ensure_ascii=False), job_id))
+        return True
+
     def set_hidden(self, job_id, hidden):
         with self.db() as db:
             db.execute('BEGIN IMMEDIATE')

@@ -21,10 +21,11 @@ def array(items):
 
 TEXT = {'type': 'string'}
 NUMBER = {'type': 'number'}
+CAMERA_ELEVATION = {**NUMBER, 'minimum': -10, 'maximum': 70}
 VECTOR = {**array(NUMBER), 'minItems': 3, 'maxItems': 3}
 CAMERA = obj({'focus': array(TEXT), 'framing': {'type': 'string', 'enum': list(FRAMINGS)},
               'movement': {'type': 'string', 'enum': list(MOVEMENTS)},
-              'azimuth': NUMBER, 'end_azimuth': NUMBER, 'elevation': NUMBER})
+              'azimuth': NUMBER, 'end_azimuth': NUMBER, 'elevation': CAMERA_ELEVATION})
 SCENE_SCHEMA = obj({
     'description': TEXT,
     'subjects': array(obj({'id': TEXT, 'label': TEXT, 'kind': {'type': 'string', 'enum': list(KINDS)},
@@ -135,7 +136,7 @@ def validate_scene(value, duration, scene_count=None):
             fail('unsupported camera framing or movement')
         number(c['azimuth'], -720, 720, 'azimuth')
         number(c['end_azimuth'], -720, 720, 'end_azimuth')
-        number(c['elevation'], -10, 70, 'elevation')
+        number(c['elevation'], CAMERA_ELEVATION['minimum'], CAMERA_ELEVATION['maximum'], 'elevation')
     if abs(last - duration) > .001:
         fail('scenes must end at requested duration')
     return copy.deepcopy(value)

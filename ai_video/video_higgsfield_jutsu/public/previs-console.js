@@ -407,6 +407,7 @@ export function initPrevis({request, apiUrl, renderVideoValidation, getWorkSetti
           ...(scenarioSessionId ? {sessionId: scenarioSessionId} : {})
         },
         body: JSON.stringify(scenarioSessionId ? {
+          usageLogEnabled: getWorkSettings().usageLogEnabled === true,
           sessionId: scenarioSessionId,
           message: requirements,
           duration: $('duration').value,
@@ -609,6 +610,7 @@ export function initPrevis({request, apiUrl, renderVideoValidation, getWorkSetti
     providerSelect.value = config.provider ?? 'wan';
     const referenceMode = select([
       ['text_endpoints', '상세 촬영 텍스트 + 시작·종료 이미지'],
+      ['text_continuity', '첫 씬 기준 · 후속 씬 연속 연결 (테스트)'],
       ['video', '카메라·배치 MP4 + 에셋'],
       ['compare_first_frame', '합성 구도 이미지 + MP4'],
       ['compare_references', '멤버별 참조 이미지 + MP4']
@@ -765,10 +767,11 @@ export function initPrevis({request, apiUrl, renderVideoValidation, getWorkSetti
       const opening = mode === 'compare_first_frame',
         comparing = mode.startsWith('compare_');
       const endpoints = mode === 'text_endpoints';
-      const spatial = endpoints || opening || mode.startsWith('spatial');
+      const continuous = mode === 'text_continuity';
+      const spatial = endpoints || continuous || opening || mode.startsWith('spatial');
       const audioCount = countAssets(true);
       for (const option of referenceMode.options) {
-        const modeName = option.value === 'text_endpoints' ? 'spatial' : option.value === 'compare_references' ? 'video' : option.value === 'compare_first_frame' ? 'spatial_motion' : option.value;
+        const modeName = ['text_endpoints', 'text_continuity'].includes(option.value) ? 'spatial' : option.value === 'compare_references' ? 'video' : option.value === 'compare_first_frame' ? 'spatial_motion' : option.value;
         option.disabled = Boolean(config.referenceModes && !config.referenceModes.includes(modeName)) ||
           (option.value.startsWith('compare_') && !(config.identityComparisonModes ?? []).includes(option.value));
       }
@@ -786,6 +789,10 @@ export function initPrevis({request, apiUrl, renderVideoValidation, getWorkSetti
       for (const control of panel.querySelectorAll('textarea,input,select,button'))
         if (control !== submit) control.disabled = locked;
       if (endpoints) spatialInput.value = 'first_last';
+      if (continuous) {
+        spatialInput.value = 'references';
+        note.textContent = '첫 씬을 기준으로 시작하고 후속 씬은 행동·대사·구도 의도를 참고합니다. 위치와 카메라는 직전 흐름에서 연결하며 명시적인 컷·장소 변경은 유지합니다.';
+      }
       if (opening) spatialInput.value = 'first_frame';
       if (comparing && available) note.textContent = opening ?
         '합성 구도 이미지와 프리비즈 MP4를 함께 전달합니다. MP4의 카메라 경로를 유지하고 세부 동작은 자연스럽게 재구성합니다.' :
@@ -846,7 +853,7 @@ export function initPrevis({request, apiUrl, renderVideoValidation, getWorkSetti
         feedback.textContent = '에셋 전용 생성에는 캐릭터와 배경 이미지를 각각 추가하세요.';
         return;
       }
-      if ((effectiveMode() === 'text_endpoints' || effectiveMode().startsWith('spatial')) && !countAssets(false)) {
+      if ((['text_endpoints', 'text_continuity'].includes(effectiveMode()) || effectiveMode().startsWith('spatial')) && !countAssets(false)) {
         feedback.textContent = '공간 가이드에 적용할 에셋을 추가하세요.';
         return;
       }
@@ -859,6 +866,7 @@ export function initPrevis({request, apiUrl, renderVideoValidation, getWorkSetti
         const selection = [...selectedAssets];
         const {model: chatModel, db_name, chatbotid} = workSettings ?? getWorkSettings();
         const body = {
+          usageLogEnabled: getWorkSettings().usageLogEnabled === true,
           requestId,
           source,
           prompt: prompt.value.trim(),
@@ -986,7 +994,7 @@ export function initPrevis({request, apiUrl, renderVideoValidation, getWorkSetti
         B: '합성 시작 프레임'
       })[job.options.identityComparison];
       label.textContent += ' · ' + (comparisonLabel ?? ({
-        spatial: job.options.previsTranscript ? '상세 촬영 텍스트 + 시작·종료 이미지' : '공간 이미지',
+        spatial: job.options.sceneFlowPolicy ? '첫 씬 기준 · 후속 씬 연속 연결' : job.options.previsTranscript ? '상세 촬영 텍스트 + 시작·종료 이미지' : '공간 이미지',
         spatial_motion: '공간 이미지 + 동작 MP4',
         images: '에셋 전용',
         video: job.metadata.referenceVideoKind === 'camera_staging' ? '카메라·배치 MP4' : '기존 MP4 참조'

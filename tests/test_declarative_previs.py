@@ -38,6 +38,21 @@ def test_contract_and_downstream_timeline():
     validate_plan(legacy_plan(p),5,1)
 
 
+@pytest.mark.parametrize('elevation,accepted', [(-10,True),(70,True),(-10.01,False),(70.01,False)])
+def test_camera_elevation_schema_matches_validation(elevation, accepted):
+    from ai_video.video_higgsfield_jutsu.python_backend.scene_contract import CAMERA
+    rule = CAMERA['properties']['elevation']
+    assert rule['minimum'] == -10
+    assert rule['maximum'] == 70
+    p = scene()
+    p['scenes'][0]['camera']['elevation'] = elevation
+    if accepted:
+        validate_scene(p,5,1)
+    else:
+        with pytest.raises(ValueError, match='elevation'):
+            validate_scene(p,5,1)
+
+
 @pytest.mark.parametrize('mutate',[
     lambda p:p['subjects'][0].update(id='bad id'),
     lambda p:p['subjects'][0]['position'].__setitem__(0,float('nan')),

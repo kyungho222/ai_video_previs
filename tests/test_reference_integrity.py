@@ -80,7 +80,7 @@ class LegacyAnalysisTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(value,cached);samples.assert_not_called()
 
 class EndpointRepairTests(unittest.IsolatedAsyncioTestCase):
-    async def test_location_conflict_returns_to_ai_with_opening_frame_and_stops_at_three(self):
+    async def test_location_conflict_stops_at_three_without_reusing_rejected_opening(self):
         with TemporaryDirectory() as folder:
             root=Path(folder);image=root/'asset.png'
             Image.new('RGB',(240,240),'white').save(image)
@@ -107,7 +107,7 @@ class EndpointRepairTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual([g['generationAttempts'] for g in bundle['guides']],[3,3])
             self.assertTrue(all(g['status']=='excluded' for g in bundle['guides']))
             self.assertIn('sceneBrief',reviews[0][0])
-            self.assertIn(directory/'spatial-0.png',reviews[-1][1])
+            self.assertNotIn(directory/'spatial-0.png',reviews[-1][1])
 
 class CriticalSamplingTests(unittest.TestCase):
     def test_output_sampling_includes_event_time(self):
