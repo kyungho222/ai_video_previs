@@ -110,6 +110,7 @@ from .video_routes import create_video_router
 class VideoManager:
     def __init__(self, service):
         self.service = service
+        self.authentication = getattr(service, 'auth', None)
         self.root = runtime_base(service.root)
         repositories = getattr(service, "repositories", None)
         if repositories is None:
@@ -140,9 +141,8 @@ class VideoManager:
         if not reference:
             return None
         try:
-            await self.service.client.start()
-            if self.service.client.status["state"] != "connected":
-                return None
+            from ai_video.jutsu_auth import require_connection
+            await require_connection(self.service.client, authentication=self.authentication)
             response = await self.service.client.call(reference["tool"], reference["arguments"])
             content = result_data(response) or {}
             download = content.get("download") or {}
@@ -339,11 +339,8 @@ class VideoManager:
                 raise VideoError(
                     "프리비즈 파일 링크가 만료되었습니다. 원본 파일을 복구하거나 프리비즈 결과를 다시 확인하세요."
                 ) from None
-        await self.service.client.start()
-        if self.service.client.status.get("state") != "connected":
-            raise VideoError(
-                "원본 영상 링크 갱신에 Higgsfield 연결이 필요합니다. 연결 완료 후 다시 요청하세요."
-            )
+        from ai_video.jutsu_auth import require_connection
+        await require_connection(self.service.client, authentication=self.authentication)
         response = await self.service.client.call(reference["tool"], reference["arguments"])
         data = result_data(response)
         download = data.get("download") if isinstance(data, dict) else None

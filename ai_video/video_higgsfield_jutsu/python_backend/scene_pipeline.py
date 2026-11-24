@@ -12,7 +12,9 @@ from .previs_finalization import finalize_current_previs
 from .prompt_filter import apply_presentation_rules, filter_user_prompts, model_object
 from .remote_tools import call_tool, result_data, settle_operation, tool_kind
 from .scene_compiler import compile_scene
-from .scene_contract import ACTIONS, CAMERA_ELEVATION, SCENE_SCHEMA, legacy_plan, validate_scene
+from .scene_contract import ACTIONS, CAMERA_ELEVATION, SCENE_SCHEMA, execution_scene, legacy_plan, validate_scene
+
+DESIGN_ATTEMPT_LIMIT = 5
 
 PLAN_INSTRUCTIONS = f"""You direct a 3D blocking previs. Return only concise scene JSON, no analysis.
 Use the minimum necessary entities/tracks. For a simple request without scenario titles, use one scene.
@@ -52,8 +54,12 @@ async def plan_scene(request, job, history, emit, *, feedback=None):
     if feedback:
         payload['executionFeedback'] = feedback
     messages = [{'role': 'user', 'content': json.dumps(payload, ensure_ascii=False)}]
-    for attempt in range(3):
-        emit('log', f'[previs-design] AI 장면 설계 {attempt + 1}/3 · 모델 {model}')
+    budget = job.setdefault('designBudget', {'used': 0, 'limit': DESIGN_ATTEMPT_LIMIT})
+    budget['limit'] = DESIGN_ATTEMPT_LIMIT
+    while budget['used'] < DESIGN_ATTEMPT_LIMIT:
+        budget['used'] += 1
+        attempt = budget['used']
+        emit('log', f'[previs-design] AI 장면 설계 {attempt}/{DESIGN_ATTEMPT_LIMIT} · 모델 {model}')
         response = await request('responses', {
             'model': model, 'instructions': PLAN_INSTRUCTIONS + '\n' + KOREAN_ATMOSPHERE_RULE,
             'input': messages,
@@ -65,12 +71,15 @@ async def plan_scene(request, job, history, emit, *, feedback=None):
         value = None
         try:
             value = model_object(response)
+            if isinstance(value, dict):
+                job['lastSceneDesignCandidate'] = value
             design = validate_scene(value, job['duration'], len(job.get('scenarioTitles') or []) or None)
         except (ValueError, TypeError, KeyError, AttributeError) as error:
             issue = str(error)[:1500]
-            job.setdefault('designValidation', []).append({'attempt': attempt + 1, 'model': model, 'error': issue})
+            job.setdefault('designValidation', []).append({'attempt': attempt, 'model': model, 'error': issue})
             emit('checkpoint', None)
-            emit('log', '[previs-design] 설계 검증 실패 · 같은 모델에 수정 요청')
+            emit('log', '[previs-design] 설계 검증 실패 · ' + (
+                '같은 모델에 수정 요청' if attempt < DESIGN_ATTEMPT_LIMIT else '5회 한도 도달 · 최종안 적용 준비'))
             messages.extend([
                 {'role': 'assistant', 'content': json.dumps(value, ensure_ascii=False) if value is not None else '[invalid JSON]'},
                 {'role': 'user', 'content': 'Correct this scene JSON, preserving intent. Validation error: ' + issue},
@@ -82,7 +91,17 @@ async def plan_scene(request, job, history, emit, *, feedback=None):
         emit('checkpoint', None)
         emit('log', '[previs-design] 장면 설계 검증 완료 · Python 실행 준비')
         return design
-    raise RuntimeError('선택 모델이 장면 설계 검증을 3회 통과하지 못했습니다: ' + issue)
+    candidate = job.get('lastSceneDesignCandidate') or job.get('sceneDesign')
+    design, repairs = execution_scene(candidate, job['duration'], titles=job.get('scenarioTitles') or (),
+                                      request=job.get('request', ''))
+    job['sceneDesign'], job['plan'] = design, legacy_plan(design)
+    job['pipeline'] = {'version': 'declarative-v1', 'model': model}
+    job['designFallback'] = {'applied': True, 'attempts': budget['used'], 'repairs': repairs,
+                             'source': 'last_candidate' if candidate else 'request_defaults',
+                             'errors': job.get('designValidation', [])}
+    emit('checkpoint', None)
+    emit('log', '[previs-design] 검증 경고 · 총 5회 한도 도달 · 최종 설계안을 실행 범위로 보정하여 생성 계속')
+    return design
 
 
 async def invoke(client, kind, arguments, emit):
@@ -186,14 +205,21 @@ async def run_scene(client, job, design, history, emit):
         raise RuntimeError('Python 장면 실행 실패: ' + message)
     validation = (operation.get('result') or {}).get('declarativeValidation') or {}
     if not validation.get('passed'):
-        raise SceneDesignError('장면 구도·가시성 검증 실패: ' + json.dumps(validation, ensure_ascii=False)[:2500])
+        issue = '장면 구도·가시성 검증 실패: ' + json.dumps(validation, ensure_ascii=False)[:2500]
+        if job.get('designBudget', {}).get('used', 0) < DESIGN_ATTEMPT_LIMIT:
+            raise SceneDesignError(issue)
+        job.setdefault('designExecutionWarnings', []).append(issue)
+        emit('log', '[previs-design] 검증 경고 · 5회 한도 도달 · 현재 최종 장면으로 렌더링 계속')
     job['sceneDesign'], job['plan'] = design, legacy_plan(design)
     job['mutated'] = True
     job['composition']['state'] = 'completed'
-    job['cameraQuality'] = {'projectId': project_id, 'issues': [], 'framingChecked': True}
+    job['cameraQuality'] = {'projectId': project_id,
+                            'issues': job.get('designExecutionWarnings', []) if not validation.get('passed') else [],
+                            'framingChecked': bool(validation.get('passed'))}
     job['reviewBudget'] = {'used': 0, 'limit': 2, 'buildCommitted': True}
     emit('checkpoint', None)
-    emit('log', '[previs-scene] Python 구도 검증 완료 · MP4 렌더링 시작')
+    emit('log', '[previs-scene] ' + ('Python 구도 검증 완료' if validation.get('passed') else 'Python 구도 검증 경고')
+         + ' · MP4 렌더링 시작')
     return await finalize_current_previs(client, job, history, emit, settled_operation=operation)
 
 
@@ -202,6 +228,7 @@ async def run(agent, job, history, emit):
     await agent._connect(job, emit)
     model = job.get('chatModel', agent.model)
     job['chatModel'] = model
+    job['designBudget'] = {'used': 0, 'limit': DESIGN_ATTEMPT_LIMIT}
     async with httpx.AsyncClient(timeout=httpx.Timeout(180, connect=15), transport=agent.transport,
                                  follow_redirects=False) as http:
         async def request(path, body, *, stage_label=None):
@@ -217,12 +244,12 @@ async def run(agent, job, history, emit):
             model=model, cached=job.get('promptFilter'), allow_fallback=False)
         feedback = None
         try:
-            for attempt in range(2):
+            for attempt in range(DESIGN_ATTEMPT_LIMIT):
                 design = await plan_scene(request, job, history, emit, feedback=feedback)
                 try:
                     return await run_scene(agent.client, job, design, history, emit)
                 except SceneDesignError as error:
-                    if attempt:
+                    if job['designBudget']['used'] >= DESIGN_ATTEMPT_LIMIT:
                         raise
                     feedback = str(error)
                     emit('log', '[previs-design] 실행 검증 실패 · 기존 프로젝트에서 같은 모델로 설계 보정')

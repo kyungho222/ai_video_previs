@@ -379,7 +379,7 @@ export function initPrevis({request, apiUrl, renderVideoValidation, getWorkSetti
       return;
     }
     const settings = getWorkSettings();
-    if (!settings.model && !scenarioSessionId) {
+    if (!settings.model) {
       message('채팅 모델 목록을 확인할 수 없습니다. 페이지를 새로고침하세요.', 'error');
       return;
     }
@@ -407,6 +407,7 @@ export function initPrevis({request, apiUrl, renderVideoValidation, getWorkSetti
           ...(scenarioSessionId ? {sessionId: scenarioSessionId} : {})
         },
         body: JSON.stringify(scenarioSessionId ? {
+          model: settings.model,
           usageLogEnabled: getWorkSettings().usageLogEnabled === true,
           sessionId: scenarioSessionId,
           message: requirements,

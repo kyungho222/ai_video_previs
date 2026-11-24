@@ -7,6 +7,8 @@ services:
     restart: unless-stopped
     environment:
       PREVIS_STORAGE_MODE: server
+      JUTSU_AUTH_BROWSER_PROFILE: ${JUTSU_AUTH_BROWSER_PROFILE:-/app/ai_video/runtime/data/jutsu-browser-profile}
+      JUTSU_AUTH_BROWSER_HEADLESS: "${JUTSU_AUTH_BROWSER_HEADLESS:-1}"
     env_file:
       - ${SERVICE_ENV_FILE:-.env}
     ports:

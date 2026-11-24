@@ -1,6 +1,6 @@
 """Provider-independent camera/staging video preparation from a native 3D scene."""
 
-import asyncio
+from ai_video.jutsu_auth import require_connection
 import json
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -48,14 +48,9 @@ def scene_project_id(service, descriptor, explicit=None):
         ) from None
 
 
-async def prepare_camera_reference(client, project_id, target, record, save, progress):
+async def prepare_camera_reference(client, project_id, target, record, save, progress, *, authentication=None):
     """Persist a render operation before submission and resume it by operation ID."""
-    await client.start()
-    async with asyncio.timeout(180):
-        while client.status["state"] == "connecting":
-            await asyncio.sleep(0.2)
-    if client.status["state"] != "connected":
-        raise VideoError(client.status["message"])
+    await require_connection(client, authentication=authentication)
 
     async def invoke(kind, arguments):
         tool = next((tool for tool in client.definitions if tool_kind(tool["name"]) == kind), None)

@@ -37,43 +37,45 @@ def authorization_client(url, redirect):
     return None
 
 
-async def approve_page(page, client_id, callback):
+async def approve_page(page, client_id, callback, *, pages=None):
     google_clicked = False
     consent_clicked = False
     skip_clicked = False
     while not callback.is_set():
-        current = page.url
-        if CONSENT.match(current):
-            if parse_qs(urlparse(current).query).get("client_id") != [client_id]:
-                logger.warning("[previs-auth] 자동 승인 중단 · 승인 화면의 앱이 일치하지 않습니다.")
-                return False
-            heading = page.get_by_role("heading", name=re.compile(re.escape(APP_NAME)))
-            if not consent_clicked and await heading.is_visible() and page.url == current:
-                await page.get_by_role("button", name=CONTINUE).click(timeout=10000)
-                consent_clicked = True
-                logger.info("[previs-auth] Higgsfield 앱 연결 동의 완료 · 콜백 대기")
+        for active in list(pages if pages is not None else [page]):
+            if getattr(active, 'is_closed', lambda: False)():
                 continue
-        # The offer can replace the consent UI without changing its URL.
-        parsed = urlparse(current)
-        if parsed.scheme == "https" and parsed.netloc in HIGGSFIELD_HOSTS:
-            skip = page.get_by_role("button", name=SKIP_TO_MCP).or_(
-                page.get_by_role("link", name=SKIP_TO_MCP)
-            )
-            if not skip_clicked and await skip.count() == 1 and await skip.is_visible() and page.url == current:
-                await skip.click(timeout=10000)
-                skip_clicked = True
-                logger.info("[previs-auth] 요금제 안내 건너뛰기 · MCP 인증 계속")
-                continue
-            google = page.get_by_role("button", name=GOOGLE_SIGN_IN).or_(
-                page.get_by_role("link", name=GOOGLE_SIGN_IN)
-            )
-            if not google_clicked and await google.count() == 1 and await google.is_visible() and page.url == current:
-                google_clicked = True
-                await google.click(timeout=10000)
-                logger.info("[previs-auth] Higgsfield Google 로그인 선택")
+            current = active.url
+            if CONSENT.match(current):
+                if parse_qs(urlparse(current).query).get("client_id") != [client_id]:
+                    logger.warning("[previs-auth] 자동 승인 중단 · 승인 화면의 앱이 일치하지 않습니다.")
+                    return False
+                heading = active.get_by_role("heading", name=re.compile(re.escape(APP_NAME)))
+                if not consent_clicked and await heading.is_visible() and active.url == current:
+                    await active.get_by_role("button", name=CONTINUE).click(timeout=10000)
+                    consent_clicked = True
+                    logger.info("[previs-auth] Higgsfield 앱 연결 동의 완료 · 콜백 대기")
+                    continue
+            # The offer can replace the consent UI without changing its URL.
+            parsed = urlparse(current)
+            if parsed.scheme == "https" and parsed.netloc in HIGGSFIELD_HOSTS:
+                skip = active.get_by_role("button", name=SKIP_TO_MCP).or_(
+                    active.get_by_role("link", name=SKIP_TO_MCP)
+                )
+                if not skip_clicked and await skip.count() == 1 and await skip.is_visible() and active.url == current:
+                    await skip.click(timeout=10000)
+                    skip_clicked = True
+                    logger.info("[previs-auth] 요금제 안내 건너뛰기 · MCP 인증 계속")
+                    continue
+                google = active.get_by_role("button", name=GOOGLE_SIGN_IN).or_(
+                    active.get_by_role("link", name=GOOGLE_SIGN_IN)
+                )
+                if not google_clicked and await google.count() == 1 and await google.is_visible() and active.url == current:
+                    google_clicked = True
+                    await google.click(timeout=10000)
+                    logger.info("[previs-auth] Higgsfield Google 로그인 선택")
         await asyncio.sleep(0.3)
     return True
-
 
 async def approve_with_browser(url, redirect, profile, *, headless=False):
     client_id = authorization_client(url, redirect)
@@ -87,6 +89,10 @@ async def approve_with_browser(url, redirect, profile, *, headless=False):
         context = await playwright.chromium.launch_persistent_context(profile, headless=headless)
         try:
             page = await context.new_page()
+            pages = [page]
+            def track_page(new_page):
+                pages.append(new_page)
+            context.on("page", track_page)
             callback = asyncio.Event()
 
             def received(response):
@@ -97,10 +103,10 @@ async def approve_with_browser(url, redirect, profile, *, headless=False):
                     if response.status == 302 and query.get("state") == parse_qs(urlparse(url).query)["state"]:
                         callback.set()
 
-            page.on("response", received)
+            context.on("response", received)
             async with asyncio.timeout(260):
                 await page.goto(url, wait_until="domcontentloaded")
-                if await approve_page(page, client_id, callback):
+                if await approve_page(page, client_id, callback, pages=pages):
                     logger.info("[previs-auth] 브라우저 권한 승인 및 콜백 도착")
         finally:
             await context.close()

@@ -4,8 +4,11 @@ import hashlib
 from pathlib import Path
 
 from .jutsu_auth import JutsuPythonClient, OAuthStorage
+from .manager import AuthenticationManager, require_connection
+from .routes import create_auth_router
 
-__all__ = ["JutsuPythonClient", "OAuthStorage", "auth_database_path", "create_client"]
+__all__ = ["JutsuPythonClient", "OAuthStorage", "auth_database_path", "create_client",
+           "AuthenticationManager", "require_connection", "create_auth_router"]
 
 
 def auth_database_path(redirect_url, *, data_directory=None):
