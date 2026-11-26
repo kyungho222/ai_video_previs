@@ -17,10 +17,11 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 
 from .agent import JutsuAgent
 from .ai_usage import report_usage
-from .store import JobStore
+from .previs_diagnostics import build_previs_diagnostics
+from .store import JobStore, revision_instruction
 from .usage_history import UsageHistory
 from .usage_database import UsageDatabase
-from .stage_usage import submit_stage_usage
+from .usage_registration import prepare_previs_usage, record_previs_usage
 from .repositories import FEATURE_ROOT, local_repositories, runtime_base
 from .pipeline_log import log_message, log_request, logger as pipeline_logger
 from .prompt_filter import filter_user_prompts, PromptFilterError
@@ -94,7 +95,7 @@ class Service:
         self.hosts = {urlparse(url).hostname for url in self.origins}
         self.client = python_client = self.auth.client
         self.default_model = (
-            config.get("PREVIS_DEFAULT_CHAT_MODEL", "gpt-6.1-terra").strip() or "gpt-6.1-terra"
+            config.get("PREVIS_DEFAULT_CHAT_MODEL", "gemma4-26b-a4b-it").strip() or "gemma4-26b-a4b-it"
         )
         configured_models = [
             model.strip()
@@ -113,6 +114,8 @@ class Service:
         self.slots = asyncio.Semaphore(self.max_concurrent_jobs)
         self.transport = transport
         self.archive = self.repositories.archive
+        if isinstance(self.agent, JutsuAgent):
+            self.agent.archive = self.archive
         self.usage_history = self.repositories.history
         self.usage_database = UsageDatabase(config, runtime_base(self.root) / 'runtime/data/usage-db-outbox.sqlite3')
         self.scenarios = ScenarioSessions(runtime_base(self.root) / "runtime/data/scenario-sessions")
@@ -176,7 +179,7 @@ class Service:
                     if (
                         kind == "log"
                         and isinstance(value, str)
-                        and value.startswith("[previs-timing]")
+                        and value.startswith(("[previs-timing]", "[previs-camera]"))
                     ):
                         logger.info("job=%s %s", job["id"], value)
                     safe_event(kind, value)
@@ -230,6 +233,7 @@ class Service:
                 sceneId=job.get("sceneId"),
                 version=job.get("version"),
                 baseVersion=job.get("baseVersion"),
+                previsDiagnostics=build_previs_diagnostics(job),
             )
             self.store.finish(job, output)
         except asyncio.CancelledError:
@@ -253,19 +257,7 @@ class Service:
                     self.usage_history.save_previs(snapshot["data"], snapshot["state"])
             except (OSError, ValueError, sqlite3.Error):
                 logger.warning("job=%s 사용기록 저장을 완료하지 못했습니다.", job["id"])
-            try:
-                snapshot = self.store.get(job["id"])
-                if snapshot and snapshot["state"] in {"completed", "failed"}:
-                    submit_stage_usage(self.usage_database,
-                        [event["value"] for event in snapshot["events"] if event["type"] == "ai_usage"], {
-                            **job.get("workSettings", {}),
-                            "db_name": job.get("usageDbName", job.get("workSettings", {}).get("db_name")),
-                            "usageLogEnabled": job.get("usageLogEnabled") is True,
-                            "job_id": job["id"], "session_id": job.get("sessionId"),
-                            "request_id": job.get("requestId"), "job_type": "previs_chat",
-                        }, state=snapshot["state"])
-            except Exception as error:
-                logger.warning("[사용량 DB] 프리비즈 집계 지연 · job=%s · %s", job["id"], type(error).__name__)
+            record_previs_usage(self, job["id"])
             logger.info(
                 "job=%s [previs-timing] 전체 처리: %.2f초", job["id"], time.monotonic() - started
             )
@@ -338,7 +330,6 @@ def create_api_router(*, root=DEFAULT_ROOT, python_client=None, agent=None, tran
         if not isinstance(body, dict):
             raise HTTPException(400, detail="장면 내용을 입력하세요.")
         header_session_id = request.headers.get("sessionId")
-        usage_database_name = body.get("db_name")
         body_session_id = body.get("sessionId")
         lowercase_session_id = body.get("sessionid")
         if body_session_id is not None and lowercase_session_id is not None and body_session_id != lowercase_session_id:
@@ -442,10 +433,14 @@ def create_api_router(*, root=DEFAULT_ROOT, python_client=None, agent=None, tran
             pipeline_logger.info("[요청 %s] 프리비즈 프롬프트 검사 시작", request.state.pipeline_id)
             prompt_filter = await filter_user_prompts(
                 baseline_prompt, message, model=model, api_key=service.config.get("OPENAI_API_KEY"),
-                transport=service.transport, usage_sink=inspection_usage.append, allow_fallback=False,
+                transport=service.transport, usage_sink=inspection_usage.append, allow_fallback=True, combined=True,
             )
+            # The scenario is already in the completed baseline; persist only the
+            # new correction so it stays distinct and receives priority.
+            store_message = (revision_instruction(scenario_prompt(scenario), message)
+                             if scenario is not None and baseline_prompt and requirements else message)
             job, session, history = service.store.create(
-                message, session_id, duration, aspect, new_scene=new_scene,
+                store_message, session_id, duration, aspect, new_scene=new_scene,
                 **({"scenario_titles": scenario_titles} if scenario_titles else {}),
                 **({"work_settings": {"model": model, **work_metadata}} if work_metadata else {}),
             )
@@ -455,9 +450,8 @@ def create_api_router(*, root=DEFAULT_ROOT, python_client=None, agent=None, tran
             raise HTTPException(409, detail=str(exc)) from None
         job["chatModel"] = model
         job["sessionId"] = session
-        job["usageLogEnabled"] = body.get("usageLogEnabled") is True
-        job["usageDbName"] = usage_database_name
-        job["requestId"] = request.state.pipeline_id
+        await prepare_previs_usage(service, job, body, scenario=scenario,
+                                   metadata=work_metadata, request_id=request.state.pipeline_id)
         job["promptFilter"] = prompt_filter
         try:
             service.store.checkpoint(job)
@@ -510,6 +504,14 @@ def create_api_router(*, root=DEFAULT_ROOT, python_client=None, agent=None, tran
                 "request",
                 "plan",
                 "sceneDesign",
+                "sceneDirection",
+                "directionAdjustments",
+                "rawSceneDirection",
+                "rawSceneModelResponse",
+                "normalizedSceneDirection",
+                "normalizationChanges",
+                "canonicalSceneStatus",
+                "intentQuality",
                 "pipeline",
                 "designValidation",
                 "projectCreation",
@@ -547,7 +549,8 @@ def create_api_router(*, root=DEFAULT_ROOT, python_client=None, agent=None, tran
                 visible = ({'complete'} if data['state'] == 'completed' else {'error','complete'})
                 return {"state":data['state'],
                         "events":[event for event in events if not complete_only or event['type'] in visible],
-                        "ai_usage":[event['value'] for event in events if event['type'] == 'ai_usage']}
+                        "ai_usage":[event['value'] for event in events if event['type'] == 'ai_usage'],
+                        "previsDiagnostics": build_previs_diagnostics(data.get('data') or {})}
             if time.monotonic() >= deadline or await request.is_disconnected():
                 return Response(status_code=204, headers={"Retry-After":"1", "Cache-Control":"no-store"})
             cursor = max((event['sequence'] for event in data['events']), default=cursor)

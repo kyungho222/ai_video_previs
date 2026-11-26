@@ -54,23 +54,43 @@ def _scene_apply_human(rig, sample, frame, target=None):
     _pv_key(root, frame)
     parts['Torso'].location.z = 1.25 - pose['crouch']
     parts['Pelvis'].location.z = .93 - pose['crouch']
-    for name in ('Head', 'Nose', 'L_Eye', 'R_Eye', 'L_Pupil', 'R_Pupil'):
-        base = 1.80 if 'Eye' in name or 'Pupil' in name else 1.76
-        parts[name].location.z = base - pose['crouch']
+    for name in ('Head', 'Nose'):
+        parts[name].location.z = 1.76 - pose['crouch']
         _pv_key(parts[name], frame)
     _pv_key(parts['Torso'], frame)
     _pv_key(parts['Pelvis'], frame)
+    pointing = None
+    if target is not None and (sample.get('gesture_action') or sample['action']) == 'point':
+        import bpy
+        bpy.context.view_layer.update()
+        local = root.matrix_world.inverted() @ Vector(target)
+        pointing = pointing_goal(list(local), {side:pose['joints'][side+'_Shoulder'] for side in ('L','R')})
     for side, sign in (('L', -1), ('R', 1)):
         j = pose['joints']
         hip, foot = Vector(j[side + '_Hip']), Vector(j[side + '_Foot'])
         shoulder, hand = Vector(j[side + '_Shoulder']), Vector(j[side + '_Hand'])
-        if side == 'R' and target is not None and sample['action'] in ('reach', 'hold', 'point', 'slap'):
+        if pointing:
+            hand = Vector((sign * .32, 0, .94 - pose['crouch']))
+            if side == pointing['side']:
+                blend = min(1, sample.get('gesture_phase', sample['phase']) * 3)
+                hand = hand.lerp(Vector(pointing['hand']), blend)
+        elif side == 'R' and target is not None and (sample.get('gesture_action') or sample['action']) in ('reach', 'hold', 'slap'):
             # World target is converted into this actor's coordinates, including actor scale.
             local = root.matrix_world.inverted() @ Vector(target)
-            blend = min(1, sample['phase'] * 3)
+            blend = min(1, sample.get('gesture_phase', sample['phase']) * 3)
             hand = hand.lerp(local, blend)
         knee, foot = (Vector(p) for p in _pv_two_bone(hip, foot, .5, .5, (0, 1, 0)))
         elbow, hand = (Vector(p) for p in _pv_two_bone(shoulder, hand, .30, .28, (sign, .2, -.2)))
+        if pointing and side == pointing['side']:
+            desired, actual = local - shoulder, hand - shoulder
+            cosine = max(-1., min(1., desired.dot(actual) / max(1e-9, desired.length * actual.length)))
+            rig.setdefault('pointingDiagnostics', []).append({
+                'frame':frame, 'side':side, 'targetWorld':list(target),
+                'handWorld':list(root.matrix_world @ hand), 'directionErrorDegrees':_scene_math.degrees(_scene_math.acos(cosine)),
+                'contactRequired':False, 'targetDistance':pointing['targetDistance'],
+                'bodyAvoidanceApplied':pointing['avoidanceApplied'],
+                'targetResolution':sample.get('targetResolution', 'camera_position' if action_target(sample) == 'camera' else 'unspecified'),
+                'crossesBodyMidline':shoulder.x * hand.x < 0})
         for label, a, b, radius in (
             (side + '_UpperLeg', hip, knee, .072), (side + '_LowerLeg', knee, foot, .058),
             (side + '_UpperArm', shoulder, elbow, .055), (side + '_LowerArm', elbow, hand, .045),
@@ -88,6 +108,45 @@ def _scene_apply_human(rig, sample, frame, target=None):
                 _pv_key(parts[side + '_' + label], frame)
 
 
+def _scene_framing_meshes(meshes, framing):
+    """Prefer actual head geometry for close shots; fall back for other models."""
+    if framing == 'close':
+        heads = [mesh for mesh in meshes if mesh.name.lower().split('_')[-1] == 'head']
+        if heads:
+            return heads
+    return meshes
+
+
+def _scene_projection_measurements(points, framing):
+    minimum = {'close': .50, 'medium': .10, 'full': .08, 'wide': .03}.get(framing, .08)
+    result = {'bounds': None, 'width': None, 'height': None, 'minimumSize': minimum,
+              'frameMargin': .02, 'behindCameraPoints': sum(p[2] <= 0 for p in points)}
+    if points:
+        left, right = min(p[0] for p in points), max(p[0] for p in points)
+        bottom, top = min(p[1] for p in points), max(p[1] for p in points)
+        result.update(bounds={'left': round(left, 5), 'right': round(right, 5),
+                              'bottom': round(bottom, 5), 'top': round(top, 5)},
+                      width=round(right - left, 5), height=round(top - bottom, 5))
+    return result
+
+
+def _scene_projection_issues(points, framing):
+    """Check projected bounds; warnings do not override explicit camera direction."""
+    if not points:
+        return ['missing_geometry']
+    if any(p[2] <= 0 or not (.02 <= p[0] <= .98 and .02 <= p[1] <= .98) for p in points):
+        return ['outside_frame']
+    width = max(p[0] for p in points) - min(p[0] for p in points)
+    height = max(p[1] for p in points) - min(p[1] for p in points)
+    minimum = {'close': .50, 'medium': .10, 'full': .08, 'wide': .03}.get(framing, .08)
+    return ['too_small'] if max(width, height) < minimum else []
+
+
+def _scene_fit_points(actual_points, transition_points):
+    """Fit the visible subject as well as the interpolated transition target."""
+    return actual_points if actual_points is transition_points else list(actual_points) + list(transition_points)
+
+
 def _scene_bounds(roots, scene, framing='full'):
     import bpy
     from mathutils import Vector
@@ -95,13 +154,15 @@ def _scene_bounds(roots, scene, framing='full'):
     points = []
     for root in roots:
         meshes = [o for o in [root, *root.children_recursive] if o.type == 'MESH' and not o.hide_render]
-        current = [o.evaluated_get(depsgraph).matrix_world @ Vector(c) for o in meshes for c in o.bound_box]
+        selected = _scene_framing_meshes(meshes, framing)
+        head_based = framing == 'close' and selected is not meshes
+        current = [o.evaluated_get(depsgraph).matrix_world @ Vector(c) for o in selected for c in o.bound_box]
         if not current:
             raise ValueError('visible subject geometry is missing')
         lo = Vector(tuple(min(p[i] for p in current) for i in range(3)))
         hi = Vector(tuple(max(p[i] for p in current) for i in range(3)))
         # Close/medium target actual upper geometry, never the subject's ground-level origin.
-        if framing in ('medium', 'close'):
+        if framing in ('medium', 'close') and not head_based:
             fraction = .55 if framing == 'medium' else .24
             lo.z = hi.z - (hi.z - lo.z) * fraction
             if framing == 'close':
@@ -110,6 +171,15 @@ def _scene_bounds(roots, scene, framing='full'):
                 lo.x, hi.x = center_x - half, center_x + half
         points.extend(Vector((x, y, z)) for x in (lo.x, hi.x) for y in (lo.y, hi.y) for z in (lo.z, hi.z))
     return points
+
+
+def _scene_floor_safe_position(position, floor_z, clearance=.1):
+    position = list(position)
+    minimum = floor_z + clearance
+    if position[2] < minimum:
+        position[2] = minimum
+        return position, True
+    return position, False
 
 
 def _scene_camera_pose(camera, scene, points, setup, phase):
@@ -152,8 +222,12 @@ def _scene_build_camera(scene, rigs, plan):
     setups = plan['scenes']
     previous_rotation = None
     previous_position = previous_target = None
+    position_velocity = target_velocity = [0., 0., 0.]
+    motion_warnings = []
+    floor_adjusted_shots = set()
     locked = {}
     camera_samples = []
+    projection_warnings = []
     for frame in range(scene.frame_start, scene.frame_end + 1):
         scene.frame_set(frame)
         time = (frame - 1) / 24
@@ -162,14 +236,30 @@ def _scene_build_camera(scene, rigs, plan):
         setup = beat['camera']
         roots = [rigs[key]['root'] for key in setup['focus']]
         points = _scene_bounds(roots, scene, setup['framing'])
+        actual_points = points
+        # The region of interest itself must change continuously. Switching from
+        # head-only to full-body bounds in one frame defeats every pose smoother
+        # because the mandatory framing refit immediately moves the camera back.
+        elapsed = time - beat['start']
+        is_cut, blend = camera_transition(index, elapsed, beat['end'] - beat['start'], setup.get('transition', 'continuous'))
+        is_cut = index > 0 and setup.get('transition') == 'cut' and camera_samples[-1]['shot'] != index
+        if is_cut:
+            previous_position = previous_target = previous_rotation = None
+            position_velocity = target_velocity = [0., 0., 0.]
+        if index and blend < 1:
+            previous_setup = setups[index - 1]['camera']
+            previous_roots = [rigs[key]['root'] for key in previous_setup['focus']]
+            previous_points = _scene_bounds(previous_roots, scene, previous_setup['framing'])
+            if len(previous_points) == len(points):
+                points = [a.lerp(b, blend) for a, b in zip(previous_points, points)]
         u = max(0, min(1, (time - beat['start']) / (beat['end'] - beat['start'])))
         if setup['movement'] in ('locked', 'pan'):
-            lock_key = json.dumps(setup, sort_keys=True)
+            lock_key = json.dumps(setup, sort_keys=True) + (':' + str(index) if setup.get('transition') == 'cut' else '')
             if lock_key not in locked:
                 # Fit the entire interval's moving envelope once; a fixed shot stays fixed.
                 # Identical locked setups across scenario cards are one continuous shot.
                 envelope = []
-                intervals = [s for s in setups if s['camera'] == setup]
+                intervals = [beat] if setup.get('transition') == 'cut' else [s for s in setups if s['camera'] == setup]
                 frames = [f for s in intervals for f in range(
                     max(1, int(s['start'] * 24) + 1), min(scene.frame_end, int(s['end'] * 24)) + 1)]
                 for f in frames:
@@ -186,27 +276,75 @@ def _scene_build_camera(scene, rigs, plan):
                 target = (low + high) / 2
         else:
             position, target = _scene_camera_pose(camera, scene, points, setup, u)
-        # No unrequested cuts at scenario boundaries. Blend pose then refit the current ROI.
-        if index and time - beat['start'] < .3 and previous_position is not None:
-            alpha = min(1, (time - beat['start'] + 1 / 24) / .3)
-            position = previous_position.lerp(position, alpha)
-            target = previous_target.lerp(target, alpha)
-        rotation = (target - position).to_track_quat('-Z', 'Y')
+        # Scenario cards are not cuts. Limit motion throughout the entire path,
+        # including changes of framing, not just the first .3 seconds of a card.
+        if previous_position is not None:
+            speed_limit = max(2., (position - target).length * 2.)
+            position, position_velocity = camera_step(previous_position, position, position_velocity,
+                                                       1 / 24, speed_limit, speed_limit * 4)
+            target, target_velocity = camera_step(previous_target, target, target_velocity,
+                                                   1 / 24, 3., 12.)
+            position, target = Vector(position), Vector(target)
+        smoothed_position = position.copy()
+        # Fit the actual new subject as well as the interpolated region. Fitting
+        # only the latter can hide clipping during an otherwise smooth transition.
+        fit_points = _scene_fit_points(actual_points, points)
         # Ensure all intended focus geometry is inside frame even through transitions.
         for _ in range(16):
+            # ENV_floor has its top at z=-.02. Keep the camera above it even
+            # when low elevation or the framing refit moves it below ground.
+            safe_position, floor_adjusted = _scene_floor_safe_position(position, -.02)
+            position = Vector(safe_position)
+            if floor_adjusted and index not in floor_adjusted_shots:
+                motion_warnings.append({'frame': frame, 'reason': 'floor_clearance', 'shot': index})
+                floor_adjusted_shots.add(index)
+            rotation = (target - position).to_track_quat('-Z', 'Y')
             camera.location = position
             camera.rotation_euler = rotation.to_euler('XYZ', previous_rotation) if previous_rotation is not None else rotation.to_euler('XYZ')
             bpy.context.view_layer.update()
-            views = [world_to_camera_view(scene, camera, point) for point in points]
+            views = [world_to_camera_view(scene, camera, point) for point in fit_points]
             if all(p.z > 0 and .02 <= p.x <= .98 and .02 <= p.y <= .98 for p in views):
                 break
-            position = target + (position - target) * 1.15
+            # Compute the required fit distance instead of jumping back 15%.
+            # Coarse multiplicative steps caused visible single-frame pops.
+            outward = (position - target).normalized()
+            inverse = rotation.inverted()
+            corners = camera.data.view_frame(scene=scene)
+            tan_x = max(abs(p.x / p.z) for p in corners)
+            tan_y = max(abs(p.y / p.z) for p in corners)
+            distance = (position - target).length
+            for point in fit_points:
+                local = inverse @ (point - target)
+                distance = max(distance, local.z + abs(local.x) / (tan_x * .959),
+                               local.z + abs(local.y) / (tan_y * .959), local.z + .02)
+            position = target + outward * distance
         else:
-            raise ValueError('Python camera framing could not fit focus geometry')
+            motion_warnings.append({'frame': frame, 'shot': index, 'reason': 'framing_fit_incomplete'})
+            camera.location = position
+            camera.rotation_euler = (target - position).to_track_quat('-Z', 'Y').to_euler('XYZ')
+            bpy.context.view_layer.update()
+        # Framing takes precedence over motion limits. Report exceptional refits
+        # rather than claiming continuity when geometry forced a camera jump.
+        actual_views = [world_to_camera_view(scene, camera, point) for point in actual_points]
+        projection_issues = _scene_projection_issues([(p.x, p.y, p.z) for p in actual_views], setup['framing'])
+        if projection_issues:
+            projection_warnings.append({'frame': frame, 'issues': projection_issues, 'focus': list(setup['focus']),
+                'framing': setup['framing'],
+                'measurements': _scene_projection_measurements([(p.x, p.y, p.z) for p in actual_views], setup['framing']),
+                'cameraPosition': [round(v, 5) for v in position],
+                'cameraTarget': [round(v, 5) for v in target]})
+        refit_distance = (position - smoothed_position).length
+        if refit_distance > .05:
+            motion_warnings.append({'frame': frame, 'reason': 'framing_refit',
+                                    'distance': round(refit_distance, 4)})
+        if previous_position is not None:
+            position_velocity = list((position - previous_position) * 24)
         _pv_key(camera, frame)
         previous_rotation = camera.rotation_euler.copy()
         previous_position, previous_target = position.copy(), target.copy()
-        camera_samples.append({'frame': frame, 'focus': setup['focus'], 'framing': setup['framing']})
+        camera_samples.append({'frame': frame, 'shot': index, 'movement': setup['movement'],
+                               'transitioning': blend < 1 or (setup.get('transition', 'continuous') != 'cut' and elapsed < .9), 'focus': setup['focus'], 'framing': setup['framing'],
+                               'position': list(position), 'target': list(target)})
     actor_ids = {s['id'] for s in plan['subjects'] if s['kind'] != 'prop'}
     intervals = []
     for s in plan['scenes']:
@@ -217,6 +355,8 @@ def _scene_build_camera(scene, rigs, plan):
     camera['previs_framing_subjects'] = json.dumps(sorted({key for s in intervals for key in s['subjects']}))
     camera['previs_focus_intervals'] = json.dumps(intervals)
     camera['previs_declarative_framing_checked'] = True
+    camera['previs_motion_warnings'] = json.dumps(motion_warnings)
+    camera['previs_projection_warnings'] = json.dumps(projection_warnings)
     _pv_linear([camera])
     return camera_samples
 
@@ -245,12 +385,25 @@ def build_declarative_scene(plan, duration, aspect):
         else:
             root = bpy.data.objects.new(s['id'], None)
             scene.collection.objects.link(root)
-            body = _scene_primitive(s['id'] + '_mesh', s['shape'], (0, 0, .5), (1, 1, 1), s['color'], root)
-            rig = {'root': root, 'parts': {'body': body}}
+            definitions = scene_prop_parts(s['label'])
+            if definitions is None:
+                definitions = [(s['shape'], (0, 0, .5), (1, 1, 1), 1)]
+            parts = {}
+            for index, (shape, position, size, shade) in enumerate(definitions):
+                color = tuple(max(0, min(1, channel * shade)) for channel in s['color'])
+                parts['part_' + str(index)] = _scene_primitive(
+                    s['id'] + '_part_' + str(index), shape, position, size, color, root)
+            rig = {'root': root, 'parts': parts}
         rig['root']['previs_entity_id'] = s['id']
         rig['root']['previs_label'] = s['label']
         rig['root'].scale = s['size']
+        rig['root'].location = s['position']
         rigs[s['id']] = rig
+    bpy.context.view_layer.update()
+    def world_positions():
+        bpy.context.view_layer.update()
+        return {key: [float(v) for v in rig['root'].matrix_world.translation] for key, rig in rigs.items()}
+    created_positions = world_positions()
     for frame in range(1, scene.frame_end + 1):
         t = (frame - 1) / 24
         samples = {s['id']: sample_track(plan, s['id'], t) for s in plan['subjects']}
@@ -263,10 +416,15 @@ def build_declarative_scene(plan, duration, aspect):
         for s in plan['subjects']:
             rig, sample = rigs[s['id']], samples[s['id']]
             target = None
-            if sample['target']:
-                target_root = rigs[sample['target']]['root']
+            target_id = action_target(sample)
+            if target_id and target_id != 'camera':
+                target_root = rigs[target_id]['root']
                 from mathutils import Vector
                 target = target_root.matrix_world @ Vector((0, 0, .8))
+                if (sample.get('gesture_action') or sample['action']) == 'point':
+                    bounds = _scene_bounds([target_root], scene, 'full')
+                    target = Vector(tuple((min(p[i] for p in bounds) + max(p[i] for p in bounds)) / 2 for i in range(3)))
+                    sample['targetResolution'] = 'object_center'
             if s['kind'] == 'human':
                 _scene_apply_human(rig, sample, frame, target)
             else:
@@ -284,13 +442,42 @@ def build_declarative_scene(plan, duration, aspect):
                 _pv_key(root, frame)
     for rig in rigs.values():
         _pv_linear([rig['root'], *rig['parts'].values()])
+    scene.frame_set(1)
+    motion_start = world_positions()
+    scene.frame_set(scene.frame_end)
+    motion_end = world_positions()
     samples = _scene_build_camera(scene, rigs, plan)
+    # Camera is keyed after character roots. Apply camera-targeted gestures in
+    # a second pass against the evaluated camera at each frame.
+    camera_targets = {t['subject'] for t in plan['tracks'] if t.get('target') == 'camera' and t.get('action') in ('point', 'reach')}
+    if camera_targets:
+        for frame in range(scene.frame_start, scene.frame_end + 1):
+            scene.frame_set(frame)
+            bpy.context.view_layer.update()
+            for ident in camera_targets:
+                sample = sample_track(plan, ident, (frame - 1) / 24)
+                if action_target(sample) == 'camera' and (sample.get('gesture_action') or sample.get('action')) in ('point', 'reach'):
+                    _scene_apply_human(rigs[ident], sample, frame, scene.camera.matrix_world.translation.copy())
+        for ident in camera_targets:
+            _pv_linear([rigs[ident]['root'], *rigs[ident]['parts'].values()])
     visibility = previs_validate_visibility({})
     scene.frame_set(1)
+    final_positions = world_positions()
+    object_positions = {key: {'rootName': rig['root'].name, 'created': created_positions[key],
+                              'afterMotionApplied': motion_start[key], 'motionEnd': motion_end[key],
+                              'final': final_positions[key], 'sampleFrame': 1, 'motionEndFrame': scene.frame_end}
+                        for key, rig in rigs.items()}
     # Exposed to the existing spatial manifest writer and downstream asset matching.
     globals()['subjects'] = [r['root'] for r in rigs.values()]
     scene['declarative_scene_version'] = 1
+    projection = json.loads(scene.camera.get('previs_projection_warnings', '[]'))
+    quality = camera_quality(samples, projection)
     return {'subjectCount': len(rigs), 'declarativeValidation': {
-        'passed': bool(visibility.get('passed', True)), 'visibility': visibility,
+        'passed': bool(visibility.get('passed', True)) and quality['status'] == 'matched',
+        'visibility': visibility, 'camera': {'passed': quality['status'] == 'matched', 'issues': quality['issues']},
         'framingChecked': True, 'frames': len(samples)},
+        'serverCorrection': {'objectPositions': object_positions, 'cameraQuality': quality, 'cameraMotionWarnings': json.loads(scene.camera['previs_motion_warnings']),
+                             'pointingDiagnostics': {key:rig.get('pointingDiagnostics', []) for key,rig in rigs.items() if rig.get('pointingDiagnostics')},
+                             'cameraSamples': samples,
+                             'projectionWarnings': json.loads(scene.camera.get('previs_projection_warnings', '[]'))},
         'sceneIntervals': [{'start': s['start'], 'end': s['end']} for s in plan['scenes']]}

@@ -44,7 +44,7 @@ class UsageHistory:
         identifier = job.get('id')
         if not isinstance(identifier, str) or not re.fullmatch(UUID, identifier):
             return
-        fields = ('request', 'scenePrompt', 'chatModel', 'sessionId', 'version', 'promptFilter', 'plan', 'workSettings', 'directorAttempts', 'unresolvedValidation')
+        fields = ('request', 'scenePrompt', 'chatModel', 'sessionId', 'version', 'promptFilter', 'plan', 'workSettings', 'usageMemberId', 'usageJobId', 'usageDbName', 'usageLogEnabled', 'usageLogOverride', 'requestId', 'directorAttempts', 'unresolvedValidation', 'intentQuality')
         with self.db() as db:
             db.execute('BEGIN IMMEDIATE')
             if db.execute('SELECT 1 FROM history_deleted WHERE job_id=?',(identifier,)).fetchone():

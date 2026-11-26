@@ -40,7 +40,7 @@ KEYS = {
     'google': ('GOOGLE_API_KEY','GEMINI_API_KEY'),
     'anthropic': ('ANTHROPIC_API_KEY',), 'local': ('LOCAL_API_KEY',),
 }
-FALLBACK_MODEL = 'gpt-6.1-terra'
+FALLBACK_MODEL = 'gpt-6-luna'
 
 
 @dataclass(frozen=True)
@@ -222,18 +222,64 @@ def _response_failure_data(response, body):
     return None, False
 
 
-def _log_failure(body, route, status, code, *, fallback):
+def _error_diagnostics(response, body):
+    """Extract bounded provider diagnostics, never arbitrary response bodies."""
+    if response is None:
+        return 'unavailable', '-', '-'
+    request_id = _safe_code(response.headers.get('x-request-id') or response.headers.get('request-id'))
+    try:
+        data = response.json()
+    except (ValueError, TypeError):
+        return 'non_json_response', '-', request_id
+    if not isinstance(data, dict):
+        return 'unstructured_response', '-', request_id
+    error = data.get('error')
+    if not isinstance(error, dict):
+        detail = data.get('detail') or error or data.get('message')
+        if isinstance(detail, str):
+            error = {'message': detail}
+        elif isinstance(detail, dict):
+            error = detail
+    if not isinstance(error, dict):
+        return 'no_structured_error', '-', request_id
+    param = _safe_code(error.get('param'))
+    message = error.get('message')
+    if not isinstance(message, str):
+        return 'no_error_message', param, request_id
+    # Provider messages may echo user input, URLs, or credentials. Exclude
+    # quoted values and any complete input strings before recording a summary.
+    message = re.sub(r'(?i)bearer\s+[^\s,;]+', 'Bearer [redacted]', message)
+    message = re.sub(r'(?i)\b(?:sk|api[_-]?key)[-_][a-z0-9_-]{6,}', '[redacted]', message)
+    message = re.sub(r'https?://\S+', '[url]', message)
+    message = re.sub(r'([\"\']).*?\1', '[quoted]', message)
+    def redact_input(value):
+        nonlocal message
+        if isinstance(value, str) and len(value) >= 8:
+            message = message.replace(value, '[input]')
+        elif isinstance(value, list):
+            for item in value:
+                redact_input(item)
+        elif isinstance(value, dict):
+            for item in value.values():
+                redact_input(item)
+    redact_input(body.get('input'))
+    message = ' '.join(message.split())[:500]
+    return message or 'empty_error_message', param, request_id
+
+
+def _log_failure(body, route, status, code, *, fallback, response=None):
     stage = _safe_code(body.get('text',{}).get('format',{}).get('name') or 'responses')
+    detail, param, request_id = _error_diagnostics(response, body)
     logging.getLogger('uvicorn.error').warning(
-        '[model-routing] %s · 호출 실패 · stage=%s · provider=%s · model=%s · HTTP=%s · code=%s · selected=%s',
+        '[model-routing] %s · 호출 실패 · stage=%s · provider=%s · model=%s · HTTP=%s · code=%s · param=%s · provider_request_id=%s · detail=%s · selected=%s',
         'fallback' if fallback else 'call_failed', stage,
         route.provider if route else 'unresolved', route.model if route else canonical_model(body.get('model')),
-        status, code, FALLBACK_MODEL if fallback else 'none',
+        status, code, param, request_id, detail, FALLBACK_MODEL if fallback else 'none',
     )
 
 
 async def routed_post(http, openai_key, path, body, *, config=None, allow_fallback=True):
-    """Try the selected chat model, then GPT once on an operational failure."""
+    """Retry the selected chat model once before falling back to GPT."""
     if path != 'responses':
         response = await _post_once(http, openai_key, path, body, config=config)
         if not response.is_success:
@@ -248,23 +294,37 @@ async def routed_post(http, openai_key, path, body, *, config=None, allow_fallba
     error = None
     code = None
     safety = False
-    try:
-        route = resolve_model(body.get('model'), config=config, openai_key=openai_key)
-        response = await _post_once(http, openai_key, path, body, config=config, route=route)
-        code, safety = _response_failure(response, body)
-        if code is None:
-            return response
-    except (httpx.TransportError, ValueError) as caught:
-        error = caught
-        code = type(caught).__name__
+    for attempt in range(2):
+        response = None
+        error = None
+        safety = False
+        try:
+            route = resolve_model(body.get('model'), config=config, openai_key=openai_key)
+            response = await _post_once(http, openai_key, path, body, config=config, route=route)
+            code, safety = _response_failure(response, body)
+            if code is None:
+                return response
+        except (httpx.TransportError, ValueError) as caught:
+            error = caught
+            code = type(caught).__name__
+        selected_model = route.model if route else canonical_model(body.get('model'))
+        if attempt or not allow_fallback or selected_model == FALLBACK_MODEL or safety:
+            break
+        _log_failure(body, route, response.status_code if response is not None else '-',
+                     code, fallback=False, response=response)
+        logging.getLogger('uvicorn.error').warning(
+            '[model-routing] retry · provider=%s · model=%s · attempt=2/2',
+            route.provider if route else 'unresolved', selected_model,
+        )
     selected_model = route.model if route else canonical_model(body.get('model'))
     fallback = allow_fallback and selected_model != FALLBACK_MODEL and not safety
-    _log_failure(body, route, response.status_code if response else '-', code, fallback=fallback)
+    _log_failure(body, route, response.status_code if response is not None else '-', code, fallback=fallback, response=response)
     if not fallback:
         if error:
             raise error
         return response
-    fallback_body = {**body, 'model':FALLBACK_MODEL}
+    fallback_body = {**body, 'model':FALLBACK_MODEL,
+                     'max_output_tokens':max(4096,body.get('max_output_tokens') or 0)}
     fallback_route = resolve_model(FALLBACK_MODEL, config=config, openai_key=openai_key)
     try:
         result = await _post_once(http, openai_key, path, fallback_body, config=config, route=fallback_route)
@@ -276,5 +336,5 @@ async def routed_post(http, openai_key, path, body, *, config=None, allow_fallba
     result.extensions['model_fallback'] = {'from':selected_model, 'to':FALLBACK_MODEL, 'reason':code}
     fallback_code, _ = _response_failure(result, fallback_body)
     if fallback_code:
-        _log_failure(fallback_body, fallback_route, result.status_code, fallback_code, fallback=False)
+        _log_failure(fallback_body, fallback_route, result.status_code, fallback_code, fallback=False, response=result)
     return result

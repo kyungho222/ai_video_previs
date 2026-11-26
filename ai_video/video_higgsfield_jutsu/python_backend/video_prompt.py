@@ -6,13 +6,14 @@ import re
 import time
 
 import httpx
-from .audio_policy import SPEECH_LANGUAGE_RULES
 from .creative_policy import KOREAN_ATMOSPHERE_RULE
 from .scene_flow import SCENE_FLOW_RULES
 
 from .video_errors import PromptLengthError
+from .video_policy import (PREVIS_RULES, CAMERA_GUIDE_RULES, INDEPENDENT_REACTION_RULES, ASSET_REBUILD_RULES, CONTINUITY_RULES, MOTION_RULES, SPEECH_LANGUAGE_RULES)
 
-PROMPT_POLICY_VERSION = "previs-camera-guide-free-performance-v37"
+PROMPT_POLICY_VERSION = "previs-compact-python-v1"
+
 
 
 
@@ -20,46 +21,30 @@ TASK = "Create a finished cinematic video from the scene requirements and suppli
 
 
 
-PREVIS_RULES = """PREVIS REFERENCE SCOPE
-CAMERA: Match Video 1's camera path, positions, orientations, shot sizes, framing, viewpoint changes, movement and rotation directions, speed progression, shot transitions and camera timing throughout the video.
-STAGING: Preserve each character's starting root/body position, travel path and direction, relative spacing, formations and spatial relationships from Video 1. Preserve the sequence and approximate occurrence times of major actions and object-contact events such as a pass, catch, jump or shot. The root/body trajectory defines where the character is; hands and feet are free to articulate naturally around it. Maintain the established routes and event anchors while allowing local balance adjustments. Explicit current user changes take priority.
-PERFORMANCE: The video model independently reconstructs every character's detailed performance from the current scene text and assets within that camera, staging and event timeline. Ignore proxy joint angles, rough limb trajectories, flailing arms, repetitive cycles, stiff pose holds and animation cadence. Generate natural footwork, weight transfer, torso/pelvis coordination, anticipation, facial expression, independent reactions, momentum and follow-through. Reconstruct complete asset-based anatomy and maintain believable hand/foot/object contacts. For static placeholders, create the requested detailed action within their established staging. Preserve explicitly requested actions, poses, facing, synchronization, event counts and timing.
-FACING: Keep intended facing and gaze consistent with the scene requirements. For camera-facing performances, each character tracks the camera using coordinated feet, pelvis, torso, head and eyes without abandoning the established travel path. Explicit turns and back-facing actions take priority.
-APPEARANCE: Rebuild character, background and prop appearance from the matching supplied assets throughout every shot, replacing corresponding previs proxy shapes."""
-
-
-
-CAMERA_GUIDE_RULES = """CAMERA/STAGING VIDEO AND INDEPENDENT PERFORMANCE
-Video 1 is a camera/staging-only render from the native 3D scene. Its neutral head/body markers supply camera framing, body locations, travel and major timing, not a character pose or performance. Moving props and articulated limbs were removed from this guide. Reconstruct every final character and prop from the supplied assets. Use the scene text for the complete action, object interactions, independent reactions and natural detailed performance. Keep the reference camera and body paths while freely animating limbs, pelvis, torso, gaze, weight transfer and follow-through. A neutral marker does not instruct standing still or holding the hands at the waist. Preserve the intended number of props and make each pass, catch, shot and release one continuous causal interaction."""
-
-
-
-INDEPENDENT_REACTION_RULES = """INDEPENDENT CHARACTER REACTIONS
-Give interacting characters independent, causal reactions and anatomy-appropriate movement instead of mechanically matching strides or poses.
-Preserve explicitly requested synchronized actions, deliberate stillness and event counts; do not add or repeat events."""
-
-
-
-ASSET_REBUILD_RULES = """For each entity represented by a supplied character, background or prop asset, discard the corresponding previs proxy appearance and reconstruct the final entity entirely from the matching asset's identity, proportions, structure and materials.
-Keep the reference camera composition, established character root positions, travel directions, relative formations and major event timing. Reconstruct detailed articulation around that staging with physically consistent contacts, respecting explicit current user changes.
-Do not merely texture or overlay assets onto proxy shapes. Final frames must contain the reconstructed asset-based entities without retained proxy bodies, dummy limbs, block geometry or simplified proxy foliage for those entities."""
-
-
-
-CONTINUITY_RULES = """SPATIAL AND TEMPORAL CONTINUITY
-Treat timeline intervals as consecutive action beats. Preserve character identity, relative placement, contact state, travel direction, movement velocity and camera momentum across beat boundaries. Maintain the same connected environment, doorways, landmarks and lighting as the camera moves. Show threshold crossings and intermediate motion so indoor/outdoor changes have a visible spatial cause. Use the supplied opening frame as the initial physical state and progress coherently toward the ending frame. Resolve contradictory location or chronology instructions before generation. Preserve the requested continuous take. Honor explicitly requested cuts, location changes and time jumps with coherent action and identity continuity."""
 
 
 
 
 
 
-MOTION_RULES = """GENERATION
-Create final characters and environment from the supplied assets. Reconstruct detailed performance with natural joint motion, weight transfer, foot/object contact, anticipation and follow-through.
-Freely develop detailed articulation, cadence, transitions and secondary motion within reference-established root paths, formations and major event anchors, respecting explicit current scene requirements. Follow explicit user requirements first; use the original concept for story context, not as rigid pose or timing instructions. When no reference establishes an action, use restrained natural behavior without inventing plot events.
-Keep the intended cast and major events consistent. Reference sheets, proxy rigs and diagram panels are not additional scene objects.
-BODY INTEGRITY THROUGHOUT EVERY FRAME
-Preserve each character's asset-defined anatomy, body proportions, limb count and joint connections from the first frame through the last, including shot transitions. For human bodies, keep the head, neck, ribcage, spine, pelvis and limbs connected as one coherent body. Coordinate torso and pelvic rotation through a natural spine and balanced joint motion. Do not independently rotate, detach, swap, duplicate, fuse or reconnect body parts, or twist the upper body against a fixed lower body beyond anatomical limits. While carried, turning, falling or occluded by a prop or another character, maintain the same hidden body, orientation and joint connections; reveal it in a pose consistent with its preceding motion. Preserve support and hand contact until release, then continue the whole body's momentum. Reach the supplied ending pose through continuous physically plausible motion without a last-frame snap or anatomical distortion."""
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -274,9 +259,15 @@ async def optimize_video_prompt(
     cached=None,
     max_length=20000,
     guide_context=None,
+    assemble_only=True,
 ):
     """Consolidate scene text once; bind trusted reference/direction rules afterwards."""
     started = time.monotonic()
+    if assemble_only:
+        final = build_reference_prompt(user_prompt, reference_images, scene_prompt=scene_prompt,
+            duration=duration, reference_mode=reference_mode, max_length=max_length)
+        return {"prompt": final, "optimization": {"status":"server_assembled", "model":None,
+            "policy":PROMPT_POLICY_VERSION, "outputChars":len(final), "seconds":0, "aiCalls":0}}
     context = {
         "currentRequest": normalize_video_request(user_prompt),
         "originalConcept": clean_scene_text(scene_prompt),

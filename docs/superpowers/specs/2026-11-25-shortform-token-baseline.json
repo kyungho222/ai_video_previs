@@ -1,0 +1,19 @@
+{
+  "date": "2026-11-25",
+  "root": "C:\\Users\\COM-BCAEO\\Documents\\mymymymy\\company\\ai_video_service_previs\\ai_video\\video_higgsfield_jutsu\\python_backend",
+  "phase": "design-only",
+  "tokenBaseline": "not_measured",
+  "files": {
+    "shortform_scenario.py": "76cf9a30c04d8ce134f1975accbcb8e8c4f15a8d4894e8bf24190349cc7a7219",
+    "prompt_filter.py": "f912677d7d5a802165bca0e85467f156844d75bb6fe0482b20860226f065ccef",
+    "scene_pipeline.py": "55dfca4ab50cee23723d409ca2da59384eb74172e9b8414541d0fff03b4621e1",
+    "previs_timeline.py": "64a71ca9e724eab98782bf22914768d5dd65ba297a61e499e9700a16b848c19b",
+    "spatial_guides.py": "bcaa0298c4573dee9178dbace85099ec89c5cdcc81b686e5cfac31e348940378",
+    "character_direction.py": "1cbd8b910195f87217498e30690c8a98a4f38600c6b18e92ff16422065591789",
+    "video_preparation.py": "a64d68598ea51565379f7db7078ca3c95c6ed3c2ce9be6717795665cad428d24",
+    "video_prompt.py": "18bd451be0067d86318be62f4bfcdbb3a0e66da78dc33fee34d306f3d378dfa8",
+    "video_validation.py": "f505e9ec6be9b2315a0e7e1f6738f4cf16073814eb7bb0cd727023fbb0871658",
+    "video_results.py": "888b31f59b806e5e5be91d314973595f5db1d9813324f023e004313da11d7212",
+    "media_archive.py": "43b73589366426542598f1acb032bb633e8e505dccb39793c40fbb96de8562ac"
+  }
+}

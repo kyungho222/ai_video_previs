@@ -2,6 +2,32 @@
 import json
 
 
+def json_value_contract(schema):
+    """Describe result fields without presenting a JSON schema to be copied."""
+    lines = []
+    def visit(node, path, required):
+        kind = node.get('type', 'any')
+        kinds = kind if isinstance(kind, list) else [kind]
+        details = [' or '.join(kinds), 'required' if required else 'optional']
+        if 'enum' in node:
+            details.append('allowed values=' + json.dumps(node['enum'], ensure_ascii=False))
+        for key, label in (('minimum', 'minimum'), ('maximum', 'maximum'),
+                           ('minItems', 'minimum entries'), ('maxItems', 'maximum entries'),
+                           ('minLength', 'minimum length'), ('maxLength', 'maximum length')):
+            if key in node:
+                details.append(label + '=' + str(node[key]))
+        if node.get('additionalProperties') is False:
+            details.append('no extra fields')
+        lines.append(path + ': ' + '; '.join(details))
+        if 'object' in kinds:
+            for key, child in node.get('properties', {}).items():
+                visit(child, path + '.' + key, key in node.get('required', []))
+        if 'array' in kinds and isinstance(node.get('items'), dict):
+            visit(node['items'], path + '[]', True)
+    visit(schema, '$', True)
+    return '\n'.join(lines)
+
+
 def content_parts(value):
     if isinstance(value, str):
         return value
@@ -73,8 +99,11 @@ def chat_payload(body, route):
         if route.options.get('schema_mode') == 'json_object' or route.provider in ('deepseek','moonshot','kimi'):
             contract = ('\nReturn a JSON INSTANCE containing actual result values for the task above. '
                         'Do not return the schema, field definitions, examples, or explanations. '
-                        'The following schema describes the required output shape only:\n'
-                        + json.dumps(fmt['schema'], ensure_ascii=False))
+                        'Perform the requested analysis and fill each field with its actual result. '
+                        'Boolean fields must contain true or false, not descriptions of boolean types. '
+                        'For a required array with no findings, return an empty array. '
+                        'Result field requirements (paths describe structure, not literal output keys):\n'
+                        + json_value_contract(fmt['schema']))
             if route.options.get('schema_mode') == 'json_object' and messages and messages[0]['role'] == 'system':
                 # Some local chat templates discard or confuse consecutive system messages.
                 messages[0] = {**messages[0], 'content': messages[0]['content'] + contract}

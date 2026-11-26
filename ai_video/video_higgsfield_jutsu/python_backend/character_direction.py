@@ -8,7 +8,8 @@ from uuid import NAMESPACE_URL, uuid5
 import httpx
 
 from .spatial_guides import read_json_response
-from .audio_policy import SPEECH_LANGUAGE_RULES, requires_vocal_profile
+from .audio_policy import requires_vocal_profile
+from .video_prompt import SPEECH_LANGUAGE_RULES
 from .video_errors import PromptLengthError
 
 
@@ -153,12 +154,8 @@ def validate_direction(plan, cast, duration, target_ids=()):
 
 def direction_prompt(cast, plan=None):
     lines = ["CHARACTER ID ACTION AND VOICE CONTRACT",
-             "Each character_id identifies one persistent character. Bind its appearance, actions, voice and spoken lines "
-             "to that identity through camera changes. Follow the established camera and root staging. "
-             "Execute each action with its named actor and interaction targets. Perform requested joint actions together. "
-             "Each solo line belongs to its speaker; shared speaker_ids perform the line together. "
-             "Voice profile IDs identify the stated voice descriptions for this production. "
-             "Use the current user's explicit audio language instructions for the affected lines, keeping the registered voice timbre and cadence."]
+             "Keep each ID's asset identity and voice through every shot. Follow named actors, targets, timing and root paths. "
+             "Solo lines use their assigned speaker; shared speaker_ids mean unison. Explicit language edits win without changing timbre."]
     profiles = {item["character_id"]: item for item in (plan or {}).get("characters", [])}
     for character in cast:
         profile = profiles.get(character["character_id"], character)
@@ -200,13 +197,13 @@ async def prepare_character_direction(request, *, store, cast, model, user_promp
         if save:
             save(record)
         return record
-    while len(record["attempts"]) < 3:
+    while len(record["attempts"]) < 2:
         if check_owner:
             check_owner()
         cast = store.register_characters(cast)
         record["cast"] = cast
         if progress:
-            progress(f"캐릭터별 행동·음성 기획 {len(record['attempts']) + 1}/3")
+            progress(f"캐릭터별 행동·음성 기획 {len(record['attempts']) + 1}/2")
         context_data = {"cast": cast, "duration": duration, "currentRequest": user_prompt,
                         "originalConcept": scene_prompt, "sceneContext": context,
                         "allowedTargetIds": sorted(targets | {item["character_id"] for item in cast}),
@@ -251,7 +248,7 @@ async def prepare_character_direction(request, *, store, cast, model, user_promp
             save(record)
         if record["status"] == "ready":
             return record
-    record.update(status="needs_review", warning="캐릭터별 기획 보정 3회 후 남은 문제를 기록하고 원래 장면 지시로 진행합니다.")
+    record.update(status="needs_review", warning="캐릭터별 기획 보정 1회 후 남은 문제를 기록하고 원래 장면 지시로 진행합니다.")
     if save:
         save(record)
     return record

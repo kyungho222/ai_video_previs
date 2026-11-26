@@ -49,7 +49,7 @@ def _usage_row(provider, model, response, job_id, session_id, request_id, status
         "duration_seconds": usage.get("output_video_duration") if video else None,
         "credits_charged": usage.get("credits_charged"), "cost_usd": usage.get("cost_usd"),
         "call_status": status, "error_code": error_code, "latency_ms": latency_ms,
-        "provider_request_id": request_id or response.get("request_id"),
+        "provider_request_id": request_id or response.get("request_id") or response.get("id"),
         "raw_usage": raw if isinstance(raw, dict) else None,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }

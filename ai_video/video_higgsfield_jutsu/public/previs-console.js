@@ -476,6 +476,34 @@ export function initPrevis({request, apiUrl, renderVideoValidation, getWorkSetti
     if (!items.length && output.media?.length) return;
     const result = message((output.version ? 'v' + output.version + ' · ' : '') + output.message),
       links = document.createElement('div');
+    const quality = output.intentQuality;
+    if (quality) {
+      const details = document.createElement('details');
+      const summary = document.createElement('summary');
+      summary.textContent = '요청 반영 확인 · 불일치 ' + (quality.issues?.length ?? 0) + '건 · 의미 일치 확인 불가';
+      details.append(summary);
+      const labels = {framing: '화면 크기·구도', locked_drift: '고정 샷 이동', action_missing: '동작 누락',
+        action_off_camera: '동작 중 촬영 누락', camera_instruction_changed: '카메라 지시 변경',
+        requirement_not_represented: '요청 지시 누락', invalid_source_quote: '요청 근거 불일치'};
+      for (const issue of quality.issues ?? []) {
+        const row = document.createElement('p');
+        row.textContent = (labels[issue.kind] ?? issue.message ?? issue.kind ?? '실행 검증 경고') +
+          ' · ' + [issue.subject, ...(issue.subjects ?? []), issue.value, issue.field, ...(issue.reasons ?? [])].filter(Boolean).join(' / ');
+        details.append(row);
+      }
+      for (const limitation of quality.limitations ?? []) {
+        const row = document.createElement('p');
+        row.textContent = '확인 불가 · ' + (limitation.subject ?? '') + ' 회전 중 정면 유지 · 시작 정면만 적용';
+        details.append(row);
+      }
+      for (const requirement of quality.requirements ?? []) {
+        const row = document.createElement('p');
+        row.textContent = ({matched: '충족', mismatch: '불일치', unknown: '확인 불가'}[requirement.status] ?? '확인 불가') +
+          ' · ' + (requirement.sourceQuote ?? '전체 요청의 의미·외형·배경');
+        details.append(row);
+      }
+      result.append(details);
+    }
     links.className = 'downloads';
     const expiry = Math.min(...items.map(media => media.expiresAt).filter(value => Number.isFinite(value)));
     if (Number.isFinite(expiry)) {
@@ -610,7 +638,7 @@ export function initPrevis({request, apiUrl, renderVideoValidation, getWorkSetti
     }]).map(model => [model.provider, model.label]));
     providerSelect.value = config.provider ?? 'wan';
     const referenceMode = select([
-      ['text_endpoints', '상세 촬영 텍스트 + 시작·종료 이미지'],
+      ['text_endpoints', '시작 이미지 고정 + 카메라·마무리 텍스트'],
       ['text_continuity', '첫 씬 기준 · 후속 씬 연속 연결 (테스트)'],
       ['video', '카메라·배치 MP4 + 에셋'],
       ['compare_first_frame', '합성 구도 이미지 + MP4'],
@@ -640,6 +668,10 @@ export function initPrevis({request, apiUrl, renderVideoValidation, getWorkSetti
     settings.append(field('영상모델', providerSelect), field('생성 방식', referenceMode), field('생성 길이(초)', duration), field('해상도', resolution));
     const note = document.createElement('p');
     note.className = 'wan-help';
+    const guideOverride = document.createElement('input');
+    guideOverride.type = 'checkbox';
+    const guideOverrideLabel = document.createElement('label');
+    guideOverrideLabel.append(guideOverride, document.createTextNode(' 공간 가이드 검증 실패 시에도 영상 생성 (테스트용)'));
     const submit = document.createElement('button');
     submit.type = 'submit';
     submit.className = 'wan-submit';
@@ -760,7 +792,7 @@ export function initPrevis({request, apiUrl, renderVideoValidation, getWorkSetti
     const promptHelp = document.createElement('p');
     promptHelp.className = 'wan-help';
     promptHelp.textContent = '짧은 수정 요청만 입력해도 됩니다. 생략한 카메라·행동·씬 흐름은 프리비즈와 기존 장면 설명에서 이어받습니다. 에셋 전용 방식은 영상의 실제 동작을 참조할 수 없습니다.';
-    panel.append(description, field('영상 요청 · 간단한 설명 또는 수정사항', prompt), promptHelp, settings, note, assets, submit, feedback);
+    panel.append(description, field('영상 요청 · 간단한 설명 또는 수정사항', prompt), promptHelp, settings, note, assets, guideOverrideLabel, submit, feedback);
 
     function updatePanel() {
       const locked = panelLocked(),
@@ -783,13 +815,13 @@ export function initPrevis({request, apiUrl, renderVideoValidation, getWorkSetti
       }
       const available = !(spatial || comparing) || config.spatialGuidesConfigured;
       submit.disabled = locked || !config.configured || !available;
-      if (endpoints && !config.spatialInputFormats?.includes('first_last')) submit.disabled = true;
+      if (endpoints && !config.spatialInputFormats?.includes('first_frame')) submit.disabled = true;
       note.textContent = !config.configured ? config.message : !available ? '공간 가이드에는 서버의 OPENAI_API_KEY 설정이 필요합니다.' : mode === 'spatial' ? '에셋을 적용한 공간 이미지만 전달합니다. MP4는 영상모델에 보내지 않고 세부 동작은 모델이 구성합니다.' : mode === 'spatial_motion' ? '공간 이미지는 외형·구도, MP4는 동작 참고로 전달합니다. 동작이 더 강하게 고정될 수 있습니다.' : mode === 'images' ? '에셋과 텍스트를 전달합니다. MP4와 공간 가이드는 전달하지 않습니다.' : '원본 3D 장면으로 카메라·배치 전용 MP4를 만들고 에셋과 함께 전달합니다. 캐릭터의 세부 동작은 영상모델이 생성합니다.';
-      if (endpoints) note.textContent = '프리비즈를 카메라·동선 타임라인으로 분석하고 에셋을 적용한 시작·종료 이미지를 전달합니다. 캐릭터 세부 동작은 영상모델이 구성합니다.';
+      if (endpoints) note.textContent = '프리비즈를 카메라·동선 타임라인으로 분석하고 에셋을 적용한 시작 이미지 1장을 고정하고 마무리 구도는 텍스트로 전달합니다. 캐릭터 세부 동작은 영상모델이 구성합니다.';
       submit.textContent = locked ? '생성 대기·진행 중' : activeCount() >= maxConcurrentJobs ? '대기열에 추가' : spatial ? '공간 가이드 생성 후 영상 생성' : mode === 'images' ? '에셋과 텍스트로 생성' : 'MP4 전달하고 생성';
       for (const control of panel.querySelectorAll('textarea,input,select,button'))
         if (control !== submit) control.disabled = locked;
-      if (endpoints) spatialInput.value = 'first_last';
+      if (endpoints) spatialInput.value = 'first_frame';
       if (continuous) {
         spatialInput.value = 'references';
         note.textContent = '첫 씬을 기준으로 시작하고 후속 씬은 행동·대사·구도 의도를 참고합니다. 위치와 카메라는 직전 흐름에서 연결하며 명시적인 컷·장소 변경은 유지합니다.';
@@ -799,7 +831,7 @@ export function initPrevis({request, apiUrl, renderVideoValidation, getWorkSetti
         '합성 구도 이미지와 프리비즈 MP4를 함께 전달합니다. MP4의 카메라 경로를 유지하고 세부 동작은 자연스럽게 재구성합니다.' :
         '멤버별 참조 이미지와 배경 에셋, 프리비즈 MP4를 함께 전달합니다.';
       if (comparing) submit.textContent = locked ? '생성 대기·진행 중' : '선택한 방식으로 생성';
-      if (endpoints && !config.spatialInputFormats?.includes('first_last')) note.textContent = '선택 모델이 시작·종료 이미지 입력을 지원하지 않습니다.';
+      if (endpoints && !config.spatialInputFormats?.includes('first_frame')) note.textContent = '선택 모델이 시작 이미지 입력을 지원하지 않습니다.';
       if (mode === 'spatial_motion') spatialInput.value = 'references';
       audioPicker.disabled = locked || !config.referenceAudioLimit;
       if (audioCount > (config.referenceAudioLimit ?? 0)) {
@@ -879,6 +911,7 @@ export function initPrevis({request, apiUrl, renderVideoValidation, getWorkSetti
           db_name,
           chatbotid,
           referenceMode: referenceMode.value,
+          allowUnverifiedGuides: guideOverride.checked,
           characterMotion: 'independent',
           spatialInput: spatialInput.value,
           spatialGuideCount: guideCount.value === 'auto' ? 'auto' : Number(guideCount.value)
@@ -995,7 +1028,7 @@ export function initPrevis({request, apiUrl, renderVideoValidation, getWorkSetti
         B: '합성 시작 프레임'
       })[job.options.identityComparison];
       label.textContent += ' · ' + (comparisonLabel ?? ({
-        spatial: job.options.sceneFlowPolicy ? '첫 씬 기준 · 후속 씬 연속 연결' : job.options.previsTranscript ? '상세 촬영 텍스트 + 시작·종료 이미지' : '공간 이미지',
+        spatial: job.options.sceneFlowPolicy ? '첫 씬 기준 · 후속 씬 연속 연결' : job.options.previsTranscript ? '시작 이미지 고정 + 카메라·마무리 텍스트' : '공간 이미지',
         spatial_motion: '공간 이미지 + 동작 MP4',
         images: '에셋 전용',
         video: job.metadata.referenceVideoKind === 'camera_staging' ? '카메라·배치 MP4' : '기존 MP4 참조'

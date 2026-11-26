@@ -159,17 +159,6 @@ def previs_humanoid(name="Adult", position=(0, 0, 0), color=(0.2, 0.4, 0.8, 1)):
     sphere("Head", (0, 0, 1.76), (0.14, 0.13, 0.18))
     # Nose makes facing direction visible.
     sphere("Nose", (0, 0.13, 1.76), (0.045, 0.065, 0.045))
-    eye_white = bpy.data.materials.new(name + "_EyeWhite")
-    eye_white.diffuse_color = (0.96, 0.97, 1, 1)
-    pupil = bpy.data.materials.new(name + "_Pupil")
-    pupil.diffuse_color = (0.015, 0.025, 0.04, 1)
-    for side, sign in (("L", -1), ("R", 1)):
-        eye = sphere(side + "_Eye", (sign * 0.055, 0.119, 1.80), (0.033, 0.019, 0.028))
-        eye.data.materials.clear()
-        eye.data.materials.append(eye_white)
-        dot = sphere(side + "_Pupil", (sign * 0.055, 0.137, 1.80), (0.014, 0.011, 0.018))
-        dot.data.materials.clear()
-        dot.data.materials.append(pupil)
     for side in ("L", "R"):
         for limb in ("UpperLeg", "LowerLeg", "UpperArm", "LowerArm"):
             bpy.ops.mesh.primitive_cylinder_add(vertices=10, radius=1, depth=2)

@@ -86,6 +86,23 @@ bash deploy.sh auth-status
 컨테이너의 브라우저는 기본 headless이며, 초기 로그인은 준비된 영구 프로필이 필요합니다.
 이전 로컬 이미지 이름으로 롤백할 때는 `IMAGE_REPOSITORY=ai-pro-videocreate bash deploy.sh reload <버전>`을 사용합니다.
 
+### Windows 로컬 서버 재시작
+
+프로젝트 루트에서 PowerShell을 열고 다음 명령을 실행합니다.
+
+```powershell
+.\restart-local.ps1
+```
+
+기존 로컬 서버를 종료하고 백그라운드로 다시 시작한 뒤 서버와 Higgsfield 연결 상태를 표시합니다.
+재시작하면 진행 중인 작업이 중단될 수 있습니다. 스크립트 실행 정책으로 차단될 경우에는 다음 명령을 사용합니다.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\restart-local.ps1
+```
+
+`restart-local.ps1`은 로컬 환경 전용 파일로 `.gitignore`에 포함되어 있어 Git에서 내려받지 않습니다.
+
 ### Higgsfield 브라우저 자동 승인
 
 ID·PW를 읽어 입력하는 자동 로그인은 제거했습니다. `.env`의 `id`, `password`는 인증 코드에서 사용하지 않습니다.

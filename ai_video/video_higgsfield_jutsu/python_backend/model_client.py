@@ -17,6 +17,12 @@ from .prompt_filter import guard_model_request
 
 async def request_openai(http, api_key, path, body, emit, *, stage_label=None, sleep=asyncio.sleep,
                          usage_sink=None, job_id=None, session_id=None, allow_fallback=True):
+    if path == 'responses' and 'max_output_tokens' not in body:
+        stage = body.get('text',{}).get('format',{}).get('name','')
+        limits = {'shortform_scenario':1600, 'previs_scene_design':5000,
+                  'character_direction':2200, 'video_input_review':900,
+                  'video_output_review':2400, 'spatial_guide_verification':1000}
+        body = {**body, 'max_output_tokens':limits.get(stage,3000)}
     body = guard_model_request(path, body)
     started = time.monotonic()
     route_metadata = {'provider':'openai', 'model':body.get('model')}
@@ -39,7 +45,7 @@ async def request_openai(http, api_key, path, body, emit, *, stage_label=None, s
             ))
 
     try:
-        for attempt in range(3):
+        for attempt in range(2):
             delay = float(2**attempt)
             attempt_started = time.monotonic()
             try:
@@ -76,7 +82,7 @@ async def request_openai(http, api_key, path, body, emit, *, stage_label=None, s
                     reason = "INVALID_JSON_RESPONSE"
                 capture(data, "failed", attempt_started, response.headers.get("x-request-id"),
                         "invalid_json_response" if response.is_success else safe_code)
-                if not retry or attempt == 2:
+                if not retry or attempt == 1:
                     raise RuntimeError(f"AI {label} 요청 실패 ({reason}).")
                 retry_after = response.headers.get("Retry-After")
                 if retry_after:
@@ -99,13 +105,13 @@ async def request_openai(http, api_key, path, body, emit, *, stage_label=None, s
                     body = {**body, 'model':fallback_route['model']}
                 reason = type(error).__name__
                 capture(None, "unknown", attempt_started, error_code=reason)
-                if attempt == 2:
+                if attempt == 1:
                     raise RuntimeError(
-                        f"AI {label} 연결·응답 대기가 3회 실패했습니다 ({reason})."
+                        f"AI {label} 연결·응답 대기가 2회 실패했습니다 ({reason})."
                     ) from error
             emit(
                 "log",
-                f"[previs-recovery] AI {label} 일시 오류 ({reason}) · {delay:g}초 후 {attempt+2}/3차 재시도",
+                f"[previs-recovery] AI {label} 일시 오류 ({reason}) · {delay:g}초 후 {attempt+2}/2차 재시도",
             )
             await sleep(delay)
     finally:

@@ -15,6 +15,7 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.responses import FileResponse
+from ai_video.model_gateway import canonical_model
 from .media_archive import MediaExpired, ArchiveError
 from .pipeline_log import log_request, logger
 from .scene_flow import FIRST_SCENE_CONTINUITY
@@ -24,7 +25,8 @@ from .video_media import LimitedUploadRoute, inspect_video, create_previs_upload
 from .video_prompt import DEFAULT_VIDEO_PROMPT, PROMPT_POLICY_VERSION
 
 from .camera_reference import scene_project_id, source_scene_reference
-from .work_settings import request_work_metadata, effective_chat_model
+from .work_settings import request_work_metadata, effective_chat_model, DEFAULT_VIDEO_ANALYSIS_MODEL
+from .usage_registration import prepare_video_usage
 from .video_models import validate_video_input
 from .previs_timeline import bind_source_identity
 from .prompt_filter import check_local_terms, filter_user_prompts, PromptFilterError
@@ -44,11 +46,17 @@ def create_video_router(service):
         return preferred if preferred in capabilities.regions else capabilities.regions[0]
 
     @router.post("/api/video/assets", status_code=201)
-    async def upload_asset(file: UploadFile = File(...), role: str = Form("other")):
+    async def upload_asset(file: UploadFile = File(...), role: str = Form("other"),
+                           sourceObjectId: str | None = Form(None), label: str | None = Form(None),
+                           appearance: str | None = Form(None)):
         try:
             limit = MAX_AUDIO_BYTES if role == "audio" else MAX_IMAGE_BYTES
             content = await file.read(limit + 1)
-            asset = await asyncio.to_thread(manager.assets.save, content, role, file.filename)
+            options = {}
+            if sourceObjectId is not None: options['source_object_id'] = sourceObjectId
+            if label is not None: options['label'] = label
+            if appearance is not None: options['appearance'] = appearance
+            asset = await asyncio.to_thread(manager.assets.save, content, role, file.filename, **options)
             return {**asset, "url": "/api/video/assets/" + asset["id"]}
         except AssetError as error:
             raise HTTPException(400, detail=str(error)) from None
@@ -149,7 +157,7 @@ def create_video_router(service):
                     if data.get("workSettings"):
                         media[-1]["workSettings"] = data["workSettings"]
             if media:
-                results.append({"message": "저장된 프리비즈 · " + job_id[:8], "media": media})
+                results.append({"message": "저장된 프리비즈 · " + job_id[:8], "media": media, "intentQuality": data.get("intentQuality")})
         known = {
             (item["videoSource"]["jobId"], item["videoSource"]["mediaIndex"])
             for result in results
@@ -165,10 +173,12 @@ def create_video_router(service):
             except (VideoError, OSError):
                 continue
             source = {"jobId": job_id, "mediaIndex": index}
-            work_settings = source_scene_reference(service, source).get("workSettings")
+            reference = source_scene_reference(service, source)
+            work_settings = reference.get("workSettings")
             results.append(
                 {
                     "message": "보관된 프리비즈 · " + job_id[:8],
+                    "intentQuality": reference.get("intentQuality"),
                     "media": [
                         {
                             "name": f"previs-{job_id}-{index}.mp4",
@@ -198,6 +208,8 @@ def create_video_router(service):
         if not isinstance(body, dict):
             raise HTTPException(400, detail="영상 생성 설정을 입력하세요.")
         request_id = body.get("requestId")
+        if type(body.get('allowUnverifiedGuides', False)) is not bool:
+            raise HTTPException(400, detail='가이드 강제 진행 옵션은 boolean이어야 합니다.')
         prompt, duration, resolution = (
             body.get(k) for k in ("prompt", "duration", "resolution")
         )
@@ -229,7 +241,7 @@ def create_video_router(service):
             previous_job["options"].get("workSettings") if previous_job
             else source_scene_reference(service, source).get("workSettings")
         )
-        default_chat_model = getattr(service, "default_model", service.config.get("PREVIS_DEFAULT_CHAT_MODEL", "gpt-6.1-terra"))
+        default_chat_model = canonical_model(service.config.get("VIDEO_PROMPT_MODEL") or DEFAULT_VIDEO_ANALYSIS_MODEL)
         chat_model = body.get("chatModel", previous_job["options"].get("chatModel", default_chat_model)
                               if previous_job else default_chat_model)
         if work_settings:
@@ -281,6 +293,7 @@ def create_video_router(service):
             "duration": duration,
             "resolution": resolution,
             "region": region,
+            "allowUnverifiedGuides": body.get('allowUnverifiedGuides', False),
         }
         if previous_job is None or "provider" in previous_job["options"]:
             options.update(provider=provider, model=capabilities.model)
@@ -288,9 +301,11 @@ def create_video_router(service):
             options["chatModel"] = chat_model
         if work_settings:
             options["workSettings"] = work_settings
-        options['usageLogEnabled'] = body.get('usageLogEnabled') is True
-        options['usageDbName'] = body.get('db_name')
-        options['usageRequestId'] = request.state.pipeline_id
+        usage_history = getattr(service, 'usage_history', None)
+        usage_source = ((usage_history.get(source.get('jobId')) if usage_history else None)
+                        or source_scene_reference(service, source) or {})
+        await prepare_video_usage(service, options, body, source=usage_source, previous_job=previous_job,
+                                  settings=work_settings, metadata=work_metadata, request_id=request.state.pipeline_id)
         options["scenePrompt"] = manager.scene_prompt(source)
         requested_mode = body.get("referenceMode", "auto")
         if requested_mode == "auto":
@@ -395,7 +410,7 @@ def create_video_router(service):
                     detail="공간 가이드 생성용 OPENAI_API_KEY가 없습니다. 기존 MP4 방식을 선택하세요.",
                 )
             spatial_input = (
-                "first_last" if text_endpoints else
+                "first_frame" if text_endpoints else
                 "references" if requested_mode == "text_continuity" else
                 ("references" if include_video else "first_frame")
                 if options.get("identityComparison") == "B"
@@ -470,11 +485,12 @@ def create_video_router(service):
             prompt_filter = await filter_user_prompts(
                 prompt, options["scenePrompt"], model=chat_model, api_key=service.config.get("OPENAI_API_KEY"),
                 transport=getattr(service, "transport", None),
+                cached=(previous_job or {}).get("metadata",{}).get("promptFilter"),
             )
         except PromptFilterError as error:
             raise HTTPException(error.status_code, detail=str(error)) from None
         try:
-            initial_metadata = {}
+            initial_metadata = {"ai_usage":prompt_filter.get("ai_usage",[])}
             if previous_job is None:
                 initial_metadata["promptFilter"] = prompt_filter
                 initial_metadata["sourceIdentity"] = await asyncio.to_thread(

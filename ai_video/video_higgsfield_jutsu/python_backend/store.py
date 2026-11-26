@@ -6,6 +6,15 @@ from uuid import uuid4
 from .memory_db import MemoryDatabase
 
 
+def revision_instruction(baseline, message):
+    """Avoid adding the entire original scenario again on a revision."""
+    if baseline and message.startswith(baseline):
+        suffix = message[len(baseline):].strip()
+        if suffix:
+            return re.sub(r'^추가\s*요청사항\s*[:：]\s*', '', suffix).strip()
+    return message
+
+
 def scene_brief(messages):
     """Keep recent user instructions, with the latest correction taking priority."""
     selected = []
@@ -29,9 +38,9 @@ def redact(value, *, usage=False):
         output = {}
         for key, item in value.items():
             if usage and key in ("input_tokens", "output_tokens", "cached_tokens", "total_tokens",
-                                 "reasoning_tokens") and (item is None or type(item) in (int, float)):
+                                 "reasoning_tokens", "cache_write_tokens", "ttl_30m_tokens", "ttl_12h_tokens") and (item is None or type(item) in (int, float)):
                 output[key] = item
-            elif usage and key in ("raw_usage", "input_tokens_details", "output_tokens_details") and isinstance(item, dict):
+            elif usage and key in ("raw_usage", "input_tokens_details", "output_tokens_details", "cache_write_tokens_details") and isinstance(item, dict):
                 output[key] = redact(item, usage=True)
             elif re.search(r"token|authorization|secret|headers", key, re.I):
                 output[key] = "[redacted]"
@@ -207,6 +216,7 @@ class JobStore(MemoryDatabase):
                         "scenePrompt",
                         "plan",
                         "sceneDesign",
+                        "sceneDirection",
                         "workerDrafts",
                         "codeOperations",
                         "remoteProjects",

@@ -8,18 +8,23 @@ import httpx
 
 from .model_client import request_openai
 from .ai_usage import report_usage
-from .creative_policy import KOREAN_ATMOSPHERE_RULE
 from .pipeline_log import logger
 from .prompt_filter import apply_presentation_rules, check_local_terms, filter_user_prompts, model_object
 
 
-SCENARIO_INSTRUCTIONS = """제목과 내용을 바탕으로 바로 영상 생성에 사용할 한국어 시나리오 하나를 작성하세요.
-시나리오를 시간 순서의 3~4개 씬으로 나누세요. 단순한 요청은 보통 3개, 행동이나 전환이 더 필요하면 4개로 구성하세요.
-각 씬의 title은 핵심 행동을 드러내는 짧은 제목입니다. prompt는 화면에 보이는 행동과 필요한 카메라·소리 지시를 담은 간결한 한 문단입니다. 번호, 항목명, 마크다운은 넣지 마세요.
-각 씬은 준비 동작, 계기나 반응, 주요 행동 또는 결과처럼 구별되는 순간을 맡습니다. 앞 씬의 동작과 배경, 주체가 다음 씬으로 자연스럽게 이어져야 합니다.
-예를 들어 '고양이가 달린다'는 고양이가 앞발을 핥는다 → 나비가 날아들어 고양이가 고개를 든다 → 고양이가 나비를 쫓아 달린다로 확장할 수 있습니다.
-사용자가 명시한 행동과 연출 조건을 우선하세요. 컷 전환 없이 촬영하는 요청은 연속 촬영 안의 행동 구간으로만 나누세요.
-영상 전체 길이, 화면 비율, 가로형·세로형 같은 출력 형식은 제목과 프롬프트에서 생략하세요. 씬의 행동과 순서만 묘사하세요."""
+SCENARIO_INSTRUCTIONS = (
+    'Write one Korean video scenario: 3 scenes, 4 only if needed, chronological JSON. '
+    'Each has a short title and compact prompt: actor/action, camera, required sound. '
+    'Use 1-2 sentences excluding dialogue. Preserve all requested actors, events, order, dialogue '
+    'verbatim and explicit direction; never shorten dialogue for brevity. Shared cast/setting only '
+    'in scene 1; later scenes describe changes. Begin the requested action immediately, without '
+    'invented preparation. No-cut requests use continuous action phases. Default to natural Korean '
+    'settings; traditional details only when appropriate. Honor specified cultures/styles/references. '
+    'Keep EVERY scene frontal unless explicitly directed otherwise, including close/wide shots and '
+    'push/pull movements. Looking at an object does not override this. Do not invent side/rear, '
+    'overhead, orbit or reverse views. Omit numbering, markdown, total duration and aspect ratio.'
+)
+
 
 SCENARIO_FORMAT = {
     "type": "json_schema", "name": "shortform_scenario", "strict": True,
@@ -55,19 +60,26 @@ def clean_scene_output(text):
     return text.strip()
 
 
-async def generate_scenario(*, title, summary, model, api_key, transport, request_id=None, usage_sink=None):
+async def generate_scenario(*, title, summary, model, api_key, transport, request_id=None, usage_sink=None,
+                            admission_cache=None):
     usage = []
     def capture(row):
         usage.append(row)
         report_usage(usage_sink, row)
     logger.info("[요청 %s] 시나리오 프롬프트 검사 시작", request_id)
+    cached_review = admission_cache.get(title, summary, model) if admission_cache is not None else None
     review = await filter_user_prompts(
         title, summary, model=model, api_key=api_key, transport=transport, usage_sink=capture,
-        allow_fallback=False,
+        allow_fallback=True, combined=True,
+        cached=cached_review,
     )
+    if admission_cache is not None and review is not cached_review:
+        admission_cache.put(title, summary, model, review)
+    if cached_review is not None and review is cached_review:
+        logger.info("[요청 %s] 동일 입력의 사전검사 재사용 · 유효기간 연장 없음", request_id)
     body = {
         "model": model,
-        "instructions": SCENARIO_INSTRUCTIONS + "\n" + KOREAN_ATMOSPHERE_RULE,
+        "instructions": SCENARIO_INSTRUCTIONS,
         "input": [
             {"role": "user", "content": json.dumps({"title": title, "summary": summary}, ensure_ascii=False)},
         ],
@@ -80,7 +92,7 @@ async def generate_scenario(*, title, summary, model, api_key, transport, reques
         response = await request_openai(
             http, api_key, "responses", body,
             lambda _kind, value: logging.getLogger(__name__).info("%s", value),
-            stage_label="숏폼 시나리오 생성", usage_sink=capture, allow_fallback=False,
+            stage_label="숏폼 시나리오 생성", usage_sink=capture, allow_fallback=True,
         )
     try:
         scenes = model_object(response)["scenes"]

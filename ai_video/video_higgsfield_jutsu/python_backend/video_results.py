@@ -10,9 +10,10 @@ from .video_errors import AssetError, VideoError
 
 from .video_validation import validate_video_result
 from .ai_usage import TERMINAL_VIDEO_STATES, report_usage, usage_row
-from .stage_usage import submit_stage_usage
+from .usage_registration import record_video_usage
 from .work_settings import video_analysis_model
 from .bgm import mix_background_music
+from .voice_diagnostics import log_voice_event
 from .camera_reference import source_scene_reference
 
 
@@ -25,26 +26,7 @@ class LostLease(Exception):
 
 def finalize_video_usage(self, job_id):
     """Publish one receipt per model only after the local video job is terminal."""
-    try:
-        current = self.store.get(job_id)
-        if not current or current.get('state') not in TERMINAL:
-            return
-        options = current['options']
-        if options.get('usageLogEnabled') is not True:
-            return
-        source_id = current.get('source', {}).get('jobId')
-        source = self.service.usage_history.get(source_id) if source_id else None
-        source = source or source_scene_reference(self.service, current.get('source', {})) or {}
-        submit_stage_usage(self.service.usage_database, current['metadata'].get('ai_usage', []), {
-            **(options.get('workSettings') or source.get('workSettings') or {}),
-            'db_name': options.get('usageDbName', (options.get('workSettings') or source.get('workSettings') or {}).get('db_name')),
-            'usageLogEnabled': options.get('usageLogEnabled') is True,
-            'job_id': job_id, 'source_job_id': source_id, 'session_id': source.get('sessionId'),
-            'request_id': options.get('usageRequestId'), 'job_type': 'video_generation',
-        }, state=current['state'])
-    except Exception as error:
-        logging.getLogger('uvicorn.error').warning(
-            '[사용량 DB] 영상 집계 지연 · job=%s · %s', job_id, type(error).__name__)
+    record_video_usage(self, job_id)
 
 async def _review_completed_video(self, job, owner, reference, candidate, folder, update):
     job_id = job["id"]
@@ -136,6 +118,7 @@ async def _wait_for_result(self, job, owner, reference, candidate, folder, updat
                 status=state.lower(), error_code=result.get("code"),
             ))
         if state == "SUCCEEDED":
+            log_voice_event(job_id, "모델 생성 완료", model=options.get("model"), audioMode=options.get("audioMode"))
             update(state="downloading", message="완성된 영상을 저장합니다.")
             url = result.get("video_url")
             if not isinstance(url, str):
@@ -143,7 +126,12 @@ async def _wait_for_result(self, job, owner, reference, candidate, folder, updat
             await client.download(url, candidate, max_bytes=500 * 1024 * 1024)
             if options.get("audioMode") == "bgm":
                 update(message="첨부 음원과 생성된 보이스를 합성합니다.")
-                await mix_background_music(candidate, self.assets, options["audioAssets"])
+                try:
+                    await mix_background_music(candidate, self.assets, options["audioAssets"])
+                except Exception as error:
+                    log_voice_event(job_id, "첨부 음원 합성 실패", errorType=type(error).__name__)
+                    raise
+                log_voice_event(job_id, "첨부 음원 합성 완료", audioAssetCount=len(options.get("audioAssets") or []))
             await self._review_completed_video(job, owner, reference, candidate, folder, update)
             if not self.store.publish_result(job_id, owner, candidate, folder / "wan.mp4"):
                 raise LostLease()
@@ -152,6 +140,7 @@ async def _wait_for_result(self, job, owner, reference, candidate, folder, updat
             finalize_video_usage(self, job_id)
             return
         if state in ("FAILED", "CANCELED", "UNKNOWN"):
+            log_voice_event(job_id, "모델 생성 종료", model=options.get("model"), providerState=state, errorCode=result.get("code"))
             message = client.failure_message(result)
             metadata = {**self.store.get(job_id)["metadata"], "providerError": message}
             update(state="failed", message=message, metadata=metadata, lease=0)

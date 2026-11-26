@@ -9,6 +9,7 @@ from uuid import NAMESPACE_URL, uuid5
 
 from .ai_usage import COLUMNS
 from .store import redact
+from .usage_database import usage_database_allowed
 
 SUCCESS = {'completed', 'succeeded', 'success'}
 METRICS = ('input_tokens', 'output_tokens', 'cached_tokens', 'total_tokens', 'quantity',
@@ -18,7 +19,7 @@ STAGE_USAGE_SINK = ContextVar('stage_usage_sink', default=None)
 
 def aggregate_stage_usage(rows, context, *, state):
     """Never mix different providers, models, modalities, billing units or jobs."""
-    identity = context.get('job_id') or context.get('request_id')
+    identity = context.get('execution_job_id') or context.get('job_id') or context.get('request_id')
     if not identity:
         raise ValueError('stage job_id or request_id required')
     stage = context['job_type']
@@ -60,7 +61,8 @@ def aggregate_stage_usage(rows, context, *, state):
 
 def submit_stage_usage(database, rows, context, *, state):
     """Bookkeeping must never prevent scenario, previs or video completion."""
-    if context.get('usageLogEnabled') is not True or context.get('db_name') not in {'dev_user', 'aniestkh'}:
+    if context.get('usageLogEnabled') is not True or not usage_database_allowed(
+            context.get('db_name'), override=context.get('usageLogOverride')):
         return
     try:
         for row in aggregate_stage_usage(rows, context, state=state):

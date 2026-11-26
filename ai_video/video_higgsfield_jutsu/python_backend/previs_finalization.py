@@ -126,6 +126,14 @@ def count_scene_review(job, kind, code, emit):
         emit("log", f"[previs-review] 장면 조회·수정 {budget['used']}/{budget['limit']}")
 
 
+def completion_result(job, message="프리비즈 MP4 생성이 완료되었습니다."):
+    quality = job.get('intentQuality')
+    if quality:
+        count = len(quality.get('issues', []))
+        message += f" 요청·실행 불일치 {count}건 · 의미 일치 확인 불가."
+    return {"message": message, "media": job["media"], "intentQuality": quality}
+
+
 async def finalize_current_previs(client, job, history, emit, *, settled_operation=None):
     """Retrieve a published video, or render the last settled scene, without another AI turn."""
     if job.get("unresolvedValidation"):
@@ -133,7 +141,7 @@ async def finalize_current_previs(client, job, history, emit, *, settled_operati
         raise RuntimeError("실행·필수 코드 검증 문제가 해결되지 않아 렌더링을 중단합니다: "
                            + json.dumps(job["unresolvedValidation"], ensure_ascii=False))
     if any(media.get("mediaType") == "video/mp4" for media in job.get("media", [])):
-        return {"message": "프리비즈 MP4 생성이 완료되었습니다.", "media": job["media"]}
+        return completion_result(job)
     projects = job.get("remoteProjects", [])
     if not projects:
         raise RuntimeError("조회·수정을 마쳤지만 생성된 원격 장면이 없어 렌더링할 수 없습니다.")
@@ -210,7 +218,7 @@ async def finalize_current_previs(client, job, history, emit, *, settled_operati
                 f"[previs-finalize] 품질 검증 경고 {len(warnings)}개를 기록하고 영상을 반환합니다.",
             )
             message += f" 품질 검증 경고 {len(warnings)}개가 남아 있습니다."
-        return {"message": message, "media": job["media"]}
+        return completion_result(job, message)
 
     if (
         settled_operation

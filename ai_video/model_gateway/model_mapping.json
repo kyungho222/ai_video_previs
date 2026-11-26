@@ -143,6 +143,11 @@
       "api_key_name": "local",
       "use_completion_tokens": false,
       "schema_mode": "json_object"
+    },
+    "gpt-6-luna": {
+      "api_model": "gpt-6-luna",
+      "provider": "openai",
+      "usage_model": "gpt-6-luna"
     }
   },
   "disabled_model_mappings": {

@@ -18,3 +18,5 @@
 **/.pytest_cache/
 /ai_video/refactor_whoami_final/
 /ai_video/video_generate/
+/ai_video/temp_assets/
+/restart-local.ps1

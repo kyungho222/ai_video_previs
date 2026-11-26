@@ -8,22 +8,71 @@ from io import BytesIO
 import json
 import logging
 import math
+import re
+from .contract_validation import contract_issues
 from pathlib import Path
 import httpx
 from PIL import Image, ImageOps
 from .video_errors import VideoError
 from .video_prompt import PREVIS_RULES
+from .previs_reference import scene_brief_for_frame
 from .scene_flow import FIRST_SCENE_CONTINUITY, SCENE_FLOW_RULES
 from .prompt_filter import MODEL_INPUT_GUARD, attach_presentation_rules
+from .sheet_layout import detect_sheet_layout
+from .analysis_sheet import create_analysis_sheets
+from .asset_mapping_inventory import build_asset_inventory, assess_asset_inventory, complement_mapping_from_native
 
-GUIDE_VERSION = "spatial-guides-v2"
+GUIDE_VERSION = "spatial-guides-v3-coordinate-contract"
 GUIDE_GENERATION_ATTEMPTS = 3
-MAPPING_REPAIR_ATTEMPTS = 3
-MAPPING_REGENERATION_ATTEMPTS = 2
+ENDPOINT_GENERATION_ATTEMPTS = 2
+MAPPING_REPAIR_ATTEMPTS = 2
+MAPPING_REGENERATION_ATTEMPTS = 0
+
+VIDEO_ONLY_MAPPING_RULES = (
+    "This is video-frame-only asset mapping. No original 3D object metadata is available in this task. "
+    "Match the supplied assets to observed 2D regions in the video frames. "
+    "For EVERY entity return sourceObjectIds=[] without exception. Do not invent, infer or request "
+    "original 3D object IDs, meshes or transforms. Names in scene descriptions are not 3D metadata. "
+    "Create stable entity id values only for the 2D mapping and preserve each identity across frames, "
+    "including separately cropped members of a combined character sheet. "
+)
 
 
 class GuideError(VideoError):
     pass
+
+
+def _response_diagnostic_error(message, code, response, *, json_error=None):
+    error = GuideError(message)
+    status = response.get('status') if isinstance(response, dict) else None
+    output = response.get('output') if isinstance(response, dict) else None
+    output = output if isinstance(output, list) else []
+    parts = [part for item in output if isinstance(item, dict)
+             for part in (item.get('content') if isinstance(item.get('content'), list) else [])
+             if isinstance(part, dict) and part.get('type') == 'output_text']
+    error.guide_diagnostic = {'code': code,
+        'responseStatus': status if status in ('completed', 'incomplete', 'failed', 'in_progress', 'queued') else None,
+        'outputItems': len(output), 'textParts': len(parts)}
+    if isinstance(json_error, json.JSONDecodeError):
+        error.guide_diagnostic['jsonErrorPosition'] = json_error.pos
+    return error
+
+
+def guide_verification_diagnostic(error, *, model, index):
+    result = {'stage': 'guide_verification', 'index': index, 'model': model,
+              'errorType': type(error).__name__, 'code': 'verification_error'}
+    details = getattr(error, 'guide_diagnostic', {})
+    for key in ('code', 'responseStatus', 'outputItems', 'textParts', 'jsonErrorPosition', 'missingFields', 'invalidFields', 'responseShape', 'structuralKeys', 'wrapperKeys', 'checkValues'):
+        if key in details:
+            result[key] = details[key]
+    if isinstance(error, httpx.HTTPStatusError):
+        result['httpStatus'] = error.response.status_code
+    return result
+
+
+def normalize_model_mapping(value):
+    from .mapping_coordinates import normalize_model_mapping as convert
+    return convert(value,error_type=GuideError)
 
 
 def entity_original_refs(bundle, entity):
@@ -74,12 +123,7 @@ def scene_text_without_asset_indices(text, bundle):
 
 
 def bind_spatial_prompt(prompt, bundle, asset_count, input_format, motion_enabled, scene_flow_policy=None):
-    lines = [
-        "SPATIAL IMAGE AND CAMERA REFERENCE ROLES",
-        "Spatial images establish appearance, environment identity and an initial composition. "
-        "Maintain the same mapped cast, asset identity and environment across every shot and reappearance. "
-        "Follow the reference camera viewpoint progression and camera travel. Preserve character root positions, travel paths/directions, relative formations and major event timing when a previs video is supplied. Independently reconstruct natural detailed articulation and reactions around that staging, respecting explicit current user changes.",
-    ]
+    lines = ["SPATIAL IMAGE ROLES", "Keep the mapped identities through every shot; no extra cast."]
     if input_format == "references":
         for image_number, guide in enumerate(sorted(bundle["guides"], key=lambda item: item["index"]), asset_count + 1):
             if scene_flow_policy == FIRST_SCENE_CONTINUITY:
@@ -128,7 +172,7 @@ def image_data_url(path, max_side=1536):
 
 def read_json_response(response):
     if response.get("status") not in (None, "completed"):
-        raise GuideError("공간 가이드 분석 응답이 완료되지 않았습니다.")
+        raise _response_diagnostic_error("공간 가이드 분석 응답이 완료되지 않았습니다.", 'response_incomplete', response)
     try:
         text = "".join(
             part.get("text", "")
@@ -137,8 +181,8 @@ def read_json_response(response):
             if part.get("type") == "output_text"
         )
         return json.loads(text)
-    except (ValueError, AttributeError, TypeError):
-        raise GuideError("공간 가이드 분석 응답을 해석할 수 없습니다.") from None
+    except (ValueError, AttributeError, TypeError) as error:
+        raise _response_diagnostic_error("공간 가이드 분석 응답을 해석할 수 없습니다.", 'invalid_json', response, json_error=error) from None
 
 
 def sample_frames(source, directory, count, input_format, *, frame_indices=None, frame_fractions=None):
@@ -328,7 +372,8 @@ CAST_SHEET_SCHEMA = {
                             "type": "object",
                             "properties": {
                                 "label": {"type": "string"},
-                                "bbox": {"type": "array", "items": {"type": "number"}},
+                                "bbox": {"type": "array", "minItems": 4, "maxItems": 4,
+                                         "items": {"type": "number", "minimum": 0, "maximum": 1}},
                             },
                             "required": ["label", "bbox"],
                             "additionalProperties": False,
@@ -343,6 +388,29 @@ CAST_SHEET_SCHEMA = {
     "required": ["sheets"],
     "additionalProperties": False,
 }
+
+
+def normalize_character_sheet_indices(analysis, characters):
+    """Translate complete, unambiguous image sequences to original asset indices."""
+    result = deepcopy(analysis)
+    sheets = result.get('sheets') if isinstance(result, dict) else None
+    if not isinstance(sheets, list) or len(sheets) != len(characters):
+        return result
+    indices = [row.get('imageIndex') if isinstance(row, dict) else None for row in sheets]
+    if any(type(index) is not int for index in indices) or len(set(indices)) != len(indices):
+        return result
+    originals = [index for index, _ in characters]
+    if set(indices) == set(originals):
+        return result
+    if set(indices) == set(range(len(characters))):
+        mapping = dict(enumerate(originals))
+    elif set(indices) == set(range(1, len(characters) + 1)):
+        mapping = {i + 1: value for i, value in enumerate(originals)}
+    else:
+        return result
+    for sheet in sheets:
+        sheet['imageIndex'] = mapping[sheet['imageIndex']]
+    return result
 
 
 def character_asset_parts(assets, analysis):
@@ -361,19 +429,23 @@ def character_asset_parts(assets, analysis):
             )
         boxes = []
         labels = set()
-        for member in members:
+        for member_index, member in enumerate(members, 1):
+            if not isinstance(member, dict):
+                raise GuideError(f"통합 시트 {index}번의 멤버 {member_index}: 객체 형식이 필요합니다.")
             box, label = member.get("bbox"), member.get("label")
+            if not isinstance(label, str) or not label.strip() or label.strip() in labels:
+                raise GuideError(f"통합 시트 {index}번의 멤버 {member_index}: label이 비었거나 중복됐습니다.")
             if (
-                not isinstance(label, str)
-                or not label.strip()
-                or label.strip() in labels
-                or not isinstance(box, list)
+                not isinstance(box, list)
                 or len(box) != 4
                 or any(type(value) not in (int, float) or not 0 <= value <= 1 for value in box)
                 or box[2] - box[0] < 0.02
                 or box[3] - box[1] < 0.02
             ):
-                raise GuideError("통합 시트의 멤버 이름 또는 이미지 영역이 올바르지 않습니다.")
+                raise GuideError(
+                    f"통합 시트 {index}번의 멤버 {member_index}: bbox는 0..1 범위의 "
+                    "[left,top,right,bottom] 좌표 4개이며 너비·높이는 각각 0.02 이상이어야 합니다."
+                )
             left, top, right, bottom = box
             for x1, y1, x2, y2 in boxes:
                 intersection = max(0, min(right, x2) - max(left, x1)) * max(
@@ -452,7 +524,7 @@ MAPPING_SCHEMA = {
                     "id": {"type": "string"},
                     "assetIndices": {"type": "array", "items": {"type": "integer"}},
                     "label": {"type": "string"},
-                    "appearance": {"type": "string"},
+                    "appearance": {"type": "string", "description": "Final appearance from the asset references only; never describe layout proxy geometry as the asset appearance."},
                     "sourceObjectIds": {"type": "array", "items": {"type": "string"}},
                     "confidence": {"type": "number"},
                     "frames": {
@@ -514,31 +586,78 @@ VERIFY_SCHEMA = {
 }
 
 
+async def verify_guide_response(analyze, prompt, images, *, model, index):
+    """Inspect the single response; never infer a missing check passed."""
+    attempts = []
+    for attempt in (1,):
+        value = await analyze('spatial_guide_verification', VERIFY_SCHEMA, prompt, images)
+        required = VERIFY_SCHEMA['required']
+        path = []
+        wrappers = ('result', 'verification', 'data', 'analysis', 'output')
+        structural_keys = ('type', 'properties', 'required', 'additionalProperties', 'schema', '$schema',
+                           'checks', 'results', 'assessment', 'summary', 'reason', 'status')
+        present_structure = [key for key in structural_keys if isinstance(value, dict) and key in value]
+        response_shape = ('schema_definition' if isinstance(value, dict) and value.get('type') == 'object'
+                          and isinstance(value.get('properties'), dict) else 'other')
+        wrapper_keys = [key for key in wrappers if isinstance(value, dict) and key in value]
+        # A wrapper is unambiguous only when it contains one fully-typed result
+        # and the outer object does not itself provide partial verification data.
+        if isinstance(value, dict) and not (set(value) & set(required)):
+            candidates = []
+            def visit(node, parent):
+                if not isinstance(node, dict) or len(parent) > 2:
+                    return
+                if all(key in node for key in required) and all(type(node[key]) is bool for key in required if key != 'issues') and isinstance(node['issues'], list) and all(isinstance(v, str) for v in node['issues']):
+                    candidates.append((parent, node))
+                    return
+                if set(node) & set(required):
+                    return
+                for key in wrappers:
+                    if key in node:
+                        visit(node[key], parent + [key])
+            visit(value, [])
+            if len(candidates) == 1:
+                path, value = candidates[0]
+        missing = [key for key in required if not isinstance(value, dict) or key not in value]
+        schema_issues = contract_issues(value, VERIFY_SCHEMA, allow_extra=True)
+        invalid = [key for key in required if key not in missing and any(
+            issue['path'] == key or issue['path'].startswith(key + '[') for issue in schema_issues)]
+        attempt_info = {'attempt': attempt, 'missingFields': missing, 'invalidFields': invalid,
+                        'contractIssues': schema_issues,
+                        'wrapperKeys': wrapper_keys,
+                        'responseShape': response_shape, 'structuralKeys': present_structure,
+                        'checkValues': {key: value[key] for key in required if key != 'issues'
+                                        and isinstance(value, dict) and type(value.get(key)) is bool},
+                        'extraFieldCount': len(set(value) - set(required)) if isinstance(value, dict) else 0}
+        if path:
+            attempt_info['normalizationPath'] = path
+        attempts.append(attempt_info)
+        if not schema_issues:
+            return value, attempts
+        logging.getLogger('uvicorn.error').warning(
+            '[spatial-guide-verification] 검증 응답 형식 오류 · %s',
+            json.dumps({'index': index, 'model': model, **attempt_info}, ensure_ascii=False))
+    error = GuideError('공간 가이드 검증 응답 형식이 올바르지 않습니다.')
+    error.guide_diagnostic = {'code': 'invalid_verification_format',
+                              'missingFields': attempts[-1]['missingFields'],
+                              'invalidFields': attempts[-1]['invalidFields'],
+                              'responseShape': attempts[-1]['responseShape'],
+                              'structuralKeys': attempts[-1]['structuralKeys'],
+                              'wrapperKeys': attempts[-1]['wrapperKeys'],
+                              'checkValues': attempts[-1]['checkValues']}
+    error.verification_attempts = attempts
+    raise error
+
+
 def mapping_field_issues(value, schema=None, path="$"):
     """Locate missing or mistyped mapping fields using the model's output contract."""
     schema = MAPPING_SCHEMA if schema is None else schema
-    expected = schema["type"]
-    valid_type = {
-        "object": isinstance(value, dict),
-        "array": isinstance(value, list),
-        "string": isinstance(value, str),
-        "integer": type(value) is int,
-        "number": type(value) in (int, float),
-        "boolean": type(value) is bool,
-    }[expected]
-    if not valid_type:
-        return [{"path": path, "message": "Expected " + expected}]
-    issues = []
-    if expected == "object":
-        for name in schema.get("required", []):
-            if name not in value:
-                issues.append({"path": path + "." + name, "message": "Required field missing"})
-        for name, field in schema.get("properties", {}).items():
-            if name in value:
-                issues.extend(mapping_field_issues(value[name], field, path + "." + name))
-    elif expected == "array":
-        for index, item in enumerate(value):
-            issues.extend(mapping_field_issues(item, schema["items"], f"{path}[{index}]"))
+    issues = contract_issues(value, schema, path, allow_extra=True)
+    for issue in issues:
+        if issue['message'].startswith('expected '):
+            issue['message'] = 'Expected ' + issue['message'][9:]
+        elif issue['message'] == 'required field missing':
+            issue['message'] = 'Required field missing'
     return issues
 
 
@@ -593,11 +712,27 @@ def validate_mapping(mapping, assets, frames, scene_manifest, *, allow_ambiguous
         if len(sheet_indices) != len(set(sheet_indices)):
             raise GuideError("통합 시트의 서로 다른 멤버를 하나의 인물로 매핑했습니다.")
         covered.extend(indices)
-        if any(value not in known for value in entity.get("sourceObjectIds", [])):
-            raise GuideError("원본에 없는 3D 객체 ID가 매핑되었습니다.")
+        unknown = [value for value in entity.get("sourceObjectIds", []) if value not in known]
+        if unknown:
+            raise GuideError("원본에 없는 3D 객체 ID가 매핑되었습니다: " + json.dumps({
+                'entityId': entity['id'], 'unknownSourceObjectIds': unknown,
+                'knownSourceObjectIds': sorted(known),
+            }, ensure_ascii=False))
         samples = entity.get("frames", [])
-        if sorted(sample.get("index") for sample in samples) != list(range(len(frames))):
-            raise GuideError("공간 가이드 프레임별 대상 매핑이 누락되었습니다.")
+        received = [sample["index"] for sample in samples]
+        expected = list(range(len(frames)))
+        if sorted(received) != expected:
+            details = {
+                "path": f"$.entities[{entity_index}].frames",
+                "entityId": entity["id"],
+                "expectedIndices": expected,
+                "receivedIndices": received,
+                "missingIndices": sorted(set(expected) - set(received)),
+                "unexpectedIndices": sorted(set(received) - set(expected)),
+                "duplicateIndices": sorted({i for i in received if received.count(i) > 1}),
+            }
+            raise GuideError("공간 가이드 프레임별 대상 매핑이 누락되거나 중복되었습니다. "
+                             + json.dumps(details, ensure_ascii=False))
         for sample in samples:
             box = sample.get("bbox", [])
             if (
@@ -614,7 +749,17 @@ def validate_mapping(mapping, assets, frames, scene_manifest, *, allow_ambiguous
             if sample["visible"] and (box[2] <= box[0] or box[3] <= box[1]):
                 raise GuideError("보이는 대상의 화면 경계가 올바르지 않습니다.")
     if sorted(covered) != list(range(1, len(assets) + 1)):
-        raise GuideError("일부 에셋이 누락되거나 중복 매핑되었습니다.")
+        missing = sorted(set(range(1, len(assets) + 1)) - set(covered))
+        details = {
+            "missingAssets": [{"index": i, "role": assets[i - 1].get("role"),
+                               "label": assets[i - 1].get("label", ""),
+                               "name": assets[i - 1].get("name") or Path(str(assets[i - 1].get("path", ""))).name,
+                               "sourceIndex": assets[i - 1].get("sourceIndex")} for i in missing],
+            "duplicateAssetIndices": sorted({i for i in covered if covered.count(i) > 1}),
+            "receivedAssetIndices": covered,
+        }
+        raise GuideError("일부 에셋이 누락되거나 중복 매핑되었습니다. "
+                         + json.dumps(details, ensure_ascii=False))
     return warnings
 
 
@@ -688,7 +833,7 @@ class SpatialGuideBuilder:
                         }
                     ]
                     + [
-                        {"type": "input_image", "image_url": image_data_url(path, 1024)}
+                        {"type": "input_image", "image_url": image_data_url(path, 768)}
                         for path in images
                     ],
                 }
@@ -700,51 +845,147 @@ class SpatialGuideBuilder:
         return read_json_response(await self.request("responses", body))
 
     async def repair_mapping(self, bundle, prompt, images, assets, frames, scene_manifest,
-                             save, check_owner):
+                             save, check_owner, *, mapping_request=None, analysis_sheets=None, sheet_refs=None):
         attempts = bundle.setdefault("mappingAttempts", [])
+        inventory = build_asset_inventory(assets)
+        bundle['assetMappingInventory'] = assess_asset_inventory(inventory, {}, frames, scene_manifest)
+        save()
         candidates = []
+        known_source_ids = sorted({item['id'] for item in (scene_manifest or {}).get('objects', [])
+                                   if isinstance(item, dict) and isinstance(item.get('id'), str)})
 
-        def consider(value):
+        def apply_source_id_policy(value):
+            # With no exported 3D metadata there is no source-ID namespace to map.
+            # Entity identities, asset assignments and observed 2D boxes stay intact.
+            if known_source_ids or not isinstance(value, dict):
+                return value, []
+            value = deepcopy(value)
+            changes = []
+            entities = value.get('entities')
+            if isinstance(entities, list):
+                for entity in entities:
+                    if not isinstance(entity, dict):
+                        continue
+                    source_ids = entity.get('sourceObjectIds')
+                    if isinstance(source_ids, list) and source_ids and all(isinstance(i, str) for i in source_ids):
+                        changes.append({'entityId': entity.get('id'), 'removed': source_ids[:],
+                                        'reason': 'no_native_object_metadata'})
+                        entity['sourceObjectIds'] = []
+            return value, changes
+
+        def consider(value, record=None):
             try:
+                value, changes = apply_source_id_policy(value)
                 warnings = validate_mapping(value, assets, frames, scene_manifest, allow_ambiguous=True)
             except (GuideError, ValueError, TypeError, KeyError, AttributeError):
                 return None
             candidates.append((value, warnings))
+            if changes and record is not None:
+                record['sourceObjectIdAdjustments'] = changes
             return warnings
 
         for previous in attempts:
-            warnings = consider(previous.get("candidate"))
+            warnings = consider(previous.get("candidate"), previous)
             if warnings == []:
-                bundle.update(mapping=previous["candidate"], mappingWarnings=[], mappingStatus="ready")
+                bundle.update(mapping=candidates[-1][0], mappingWarnings=[], mappingStatus="ready")
+                bundle['assetMappingInventory'] = assess_asset_inventory(inventory, bundle['mapping'], frames, scene_manifest)
                 save()
                 return
+        if not attempts and frames and scene_manifest:
+            camera_data = []
+            for frame in frames:
+                t = frame.get('time')
+                matches = [row for row in scene_manifest.get('frames', []) if isinstance(row, dict)
+                           and type(t) in (int, float) and type(row.get('time')) in (int, float)
+                           and abs(row['time'] - t) < 1e-5]
+                camera = matches[0].get('camera') if len(matches) == 1 else None
+                location = camera.get('location') if isinstance(camera, dict) else None
+                lens = camera.get('lens') if isinstance(camera, dict) else None
+                if (not isinstance(location, list) or len(location) != 3
+                        or any(type(v) not in (int, float) or not math.isfinite(v) for v in location)
+                        or type(lens) not in (int, float) or not math.isfinite(lens)):
+                    break
+                camera_data.append({'index': frame['index'], 'position': location, 'lens': lens})
+            if len(camera_data) == len(frames):
+                native_mapping, adjustments = complement_mapping_from_native(
+                    {'cameraSummary': 'Blender camera measurements: ' + json.dumps(camera_data, ensure_ascii=False),
+                     'entities': []}, assets, frames, scene_manifest)
+                try:
+                    validate_mapping(native_mapping, assets, frames, scene_manifest)
+                except (GuideError, ValueError, TypeError, KeyError, AttributeError):
+                    pass
+                else:
+                    bundle.update(mapping=native_mapping, mappingWarnings=[], mappingStatus='ready',
+                                  nativeMappingAdjustments=adjustments)
+                    bundle['assetMappingInventory'] = assess_asset_inventory(inventory, native_mapping, frames, scene_manifest)
+                    save()
+                    return
         total_limit = MAPPING_REPAIR_ATTEMPTS + MAPPING_REGENERATION_ATTEMPTS
         mapping_schema = deepcopy(MAPPING_SCHEMA)
+        source_id_schema = mapping_schema['properties']['entities']['items']['properties']['sourceObjectIds']
+        if known_source_ids:
+            source_id_schema['items']['enum'] = known_source_ids
+            source_id_rules = (
+                "Original 3D object metadata is supplied. sourceObjectIds may contain ONLY exact "
+                "entries from knownSourceObjectIds. Never derive 3D source IDs from names, asset "
+                "labels, descriptions or pixels. "
+            )
+        else:
+            source_id_schema['maxItems'] = 0
+            source_id_rules = VIDEO_ONLY_MAPPING_RULES
+        frame_schema = mapping_schema["properties"]["entities"]["items"]["properties"]["frames"]
+        frame_schema.update(minItems=len(frames), maxItems=len(frames))
+        frame_schema["items"]["properties"]["index"]["enum"] = list(range(len(frames)))
         mapping_schema["properties"]["entities"]["items"]["properties"]["assetIndices"] = {
             "type": "array",
             "minItems": 1,
             "items": {"type": "integer", "enum": list(range(1, len(assets) + 1))},
         }
-        numbering_rules = (
-            "assetIndices must contain the current asset index values listed in the contract. "
-            "sourceIndex is provenance only: it identifies the original upload before sheet splitting. "
-            "Several cropped members can share sourceIndex but have distinct current asset indices. "
-            "Never use layout and timeline image numbers as assetIndices. "
-            "Include only entities backed by registered assets; do not add unregistered scene objects "
-            "with empty assetIndices. Offscreen registered assets keep their assetIndices and use "
-            "visible=false frame samples. Assign every current asset index exactly once overall. "
+        box_schema = mapping_schema['properties']['entities']['items']['properties']['frames']['items']['properties']['bbox']
+        box_schema.update(minItems=4,maxItems=4,items={'type':'integer','minimum':0,'maximum':1000})
+        numbering_rules = source_id_rules + (
+            "LAYOUT IMAGES ARE FIRST. Measure boxes ONLY in those layout images, never in asset images. "
+            "bbox convention is [y_min,x_min,y_max,x_max], four integer coordinates on 0..1000. "
+            "The server converts this explicit convention to internal normalized xyxy. "
+            "Asset images follow layouts and supply identity only, not object positions. "
+            "For appearance describe ONLY the referenced asset's face, clothing, anatomy and materials. "
+            "Never describe a layout's gray/wooden proxy as the final asset appearance. "
+            "assetIndices refer to the asset IDs listed in the contract, NOT image numbers. "
+            "Map each supplied asset exactly once. Hidden objects use visible=false and [0,0,0,0]. "
+            "Background/environment references are required assets too: map their intended regions "
+            "as entities even when they are not a discrete foreground object. Multiple complementary "
+            "references may belong to one environment entity. Verify that the union of assetIndices "
+            "contains every contract asset index exactly once before returning. "
+            "EVERY entity, including backgrounds and props, MUST have exactly one sample for EACH "
+            "layout index listed in layoutIndices, including index 0. Never omit unchanged, hidden, "
+            "or offscreen samples. Inspect each layout independently for visibility and position; "
+            "do not copy another frame's box or treat missing observations as hidden. "
+            "Entity id is a new stable mapping identity, distinct from sourceObjectIds. "
+            "Do not invent visible boxes for hidden props. "
         )
+        if analysis_sheets:
+            numbering_rules += (
+                ' After the layout images, asset references are ANALYSIS CONTACT SHEETS, '
+                'not one image per asset. Use analysisSheetReferences to locate each numbered '
+                'asset by imageNumber and bbox. assetIndices always refer to assetIndex, '
+                'never contact sheet number. Preserve distinct identities. '
+            )
         contract = {
-            "requiredSchema": mapping_schema,
+            "sceneRequest": prompt if mapping_request is None else mapping_request,
             "assetIndices": list(range(1, len(assets) + 1)),
-            "assets": [{"index": index, "role": asset["role"],
+            "assets": [{"index": index, "imageNumber":len(frames)+index, "role": asset["role"],
                         "label": asset.get("label", ""), "sourceIndex": asset.get("sourceIndex")}
                        for index, asset in enumerate(assets, 1)],
             "layoutIndices": list(range(len(frames))),
-            "knownSourceObjectIds": [item["id"] for item in (scene_manifest or {}).get("objects", [])
-                                     if isinstance(item, dict) and "id" in item],
+            "layoutImages": [{"index":f["index"],"imageNumber":i+1,"time":f["time"]} for i,f in enumerate(frames)],
+            "knownSourceObjectIds": known_source_ids,
+            "mappingMode": "native_objects" if known_source_ids else "video_frames_only",
             "hiddenEntitySample": {"index": 0, "visible": False, "bbox": [0, 0, 0, 0]},
         }
+        if analysis_sheets:
+            contract['analysisSheetReferences'] = [{**ref, 'imageNumber': len(frames) + ref['sheetIndex']} for ref in sheet_refs]
+            for asset, ref in zip(contract['assets'], sheet_refs):
+                asset['imageNumber'] = len(frames) + ref['sheetIndex']
         while len(attempts) < total_limit:
             # Ambiguous but structurally usable mappings already have a warning fallback.
             if len(attempts) >= MAPPING_REPAIR_ATTEMPTS and candidates:
@@ -752,6 +993,40 @@ class SpatialGuideBuilder:
             regenerating = len(attempts) >= MAPPING_REPAIR_ATTEMPTS
             if check_owner:
                 check_owner()
+            target_indices, target_frames, target_entity, prior_mapping = [], [], None, None
+            if attempts and not regenerating:
+                prior_mapping = attempts[-1].get('candidate')
+                try:
+                    validate_mapping(prior_mapping, assets, frames, scene_manifest)
+                except GuideError as error:
+                    prefix = '일부 에셋이 누락되거나 중복 매핑되었습니다. '
+                    message = str(error)
+                    if message.startswith(prefix):
+                        try:
+                            details = json.loads(message[len(prefix):])
+                        except (ValueError, TypeError):
+                            details = {}
+                        if not details.get('duplicateAssetIndices'):
+                            target_indices = [row['index'] for row in details.get('missingAssets', [])
+                                              if type(row.get('index')) is int]
+                    frame_prefix = '공간 가이드 프레임별 대상 매핑이 누락되거나 중복되었습니다. '
+                    if message.startswith(frame_prefix):
+                        try:
+                            details = json.loads(message[len(frame_prefix):])
+                        except (ValueError, TypeError):
+                            details = {}
+                        if not details.get('duplicateIndices') and not details.get('unexpectedIndices'):
+                            target_frames = [i for i in details.get('missingIndices', []) if type(i) is int]
+                            target_entity = next((e for e in prior_mapping.get('entities', [])
+                                                  if e.get('id') == details.get('entityId')), None)
+                            if target_entity and target_frames:
+                                target_indices = target_entity.get('assetIndices', [])
+                except (ValueError, TypeError, KeyError, AttributeError):
+                    prior_mapping = None
+                # Do not repeat the full analysis when the missing part cannot
+                # be isolated safely from the previous response.
+                if not target_indices:
+                    break
             feedback = ""
             if attempts:
                 feedback = (
@@ -774,21 +1049,128 @@ class SpatialGuideBuilder:
                     + json.dumps({"validationIssues": [attempt.get("issue") for attempt in attempts],
                                   "fieldIssues": attempts[-1].get("fieldIssues", [])}, ensure_ascii=False)
                 )
-            feedback += "\n" + numbering_rules
-            feedback += "\nMANDATORY MAPPING INPUT/OUTPUT CONTRACT\n" + json.dumps(contract, ensure_ascii=False)
+            request_schema = deepcopy(mapping_schema)
+            request_contract = deepcopy(contract)
+            request_rules = numbering_rules
+            if target_indices and isinstance(prior_mapping, dict):
+                request_contract['assetIndices'] = target_indices
+                request_contract['assets'] = [row for row in contract['assets'] if row['index'] in target_indices]
+                if 'analysisSheetReferences' in request_contract:
+                    request_contract['analysisSheetReferences'] = [row for row in request_contract['analysisSheetReferences']
+                                                                  if row.get('assetIndex') in target_indices]
+                request_schema['properties']['entities']['items']['properties']['assetIndices']['items']['enum'] = target_indices
+                request_rules = request_rules.replace('Map each supplied asset exactly once.',
+                                                      'Map each targeted asset exactly once.')
+                feedback = ('\nAnalyze ONLY the missing asset indices. Return entities only for these indices; '
+                            'do not repeat or change already mapped entities. '
+                            'Provide a separate observation for every requested layout frame. '
+                            'Do not guess visibility or positions.')
+                if target_frames and target_entity:
+                    request_contract['layoutIndices'] = target_frames
+                    request_contract['layoutImages'] = [row for row in contract['layoutImages'] if row['index'] in target_frames]
+                    frame_spec = request_schema['properties']['entities']['items']['properties']['frames']
+                    frame_spec.update(minItems=len(target_frames), maxItems=len(target_frames))
+                    frame_spec['items']['properties']['index']['enum'] = target_frames
+                    feedback = ('\nAnalyze ONLY the missing layout frames for entity ' + target_entity['id'] +
+                                '. Return that entity with the same id and assetIndices, and only the missing frame observations. '
+                                'Do not guess visibility or positions.')
+            feedback += "\nMANDATORY MAPPING INPUT/OUTPUT CONTRACT\n" + json.dumps(request_contract, ensure_ascii=False)
             record = {"attempt": len(attempts) + 1, "candidate": None,
                       "mode": "regenerate" if regenerating else "repair"}
+            if target_indices:
+                record['targetAssetIndices'] = target_indices
+            if target_frames:
+                record['targetFrameIndices'] = target_frames
             try:
                 record["candidate"] = await self.analyze(
-                    "spatial_asset_mapping", mapping_schema, prompt + feedback, images,
+                    "spatial_asset_mapping", request_schema, request_rules + feedback,
+                    [f["path"] for f in frames] + (list(analysis_sheets) if analysis_sheets else [Path(a["path"]) for a in assets]),
                 )
+                record["rawCandidate"] = deepcopy(record["candidate"])
+                record["coordinateConvention"] = "yxyx_1000"
+                record["candidate"] = normalize_model_mapping(record["candidate"])
+                record['candidate'], changes = apply_source_id_policy(record['candidate'])
+                if target_indices:
+                    partial_issues = mapping_field_issues(record['candidate'])
+                    if partial_issues:
+                        record['fieldIssues'] = partial_issues
+                        raise GuideError('에셋 매핑 필수값 오류: ' + json.dumps(partial_issues, ensure_ascii=False))
+                    new_entities = record['candidate'].get('entities') if isinstance(record['candidate'], dict) else None
+                    if not isinstance(new_entities, list) or any(
+                        not isinstance(entity, dict) or not isinstance(entity.get('assetIndices'), list)
+                        or any(type(i) is not int or i not in target_indices for i in entity['assetIndices'])
+                        for entity in new_entities):
+                        raise GuideError('누락 에셋 전용 응답에 기존 에셋이나 잘못된 번호가 포함되었습니다.')
+                    record['partialCandidate'] = deepcopy(record['candidate'])
+                    if target_frames:
+                        if (len(new_entities) != 1 or new_entities[0].get('id') != target_entity.get('id')
+                                or new_entities[0].get('assetIndices') != target_entity.get('assetIndices')
+                                or sorted(f.get('index') for f in new_entities[0].get('frames', [])) != sorted(target_frames)):
+                            raise GuideError('누락 프레임 전용 응답이 기존 대상 또는 요청 프레임과 일치하지 않습니다.')
+                        merged = deepcopy(prior_mapping)
+                        existing = next(e for e in merged['entities'] if e.get('id') == target_entity['id'])
+                        existing['frames'].extend(deepcopy(new_entities[0]['frames']))
+                        existing['frames'].sort(key=lambda row: row['index'])
+                        record['candidate'] = merged
+                    else:
+                        record['candidate'] = {**deepcopy(prior_mapping),
+                            'entities': deepcopy(prior_mapping['entities']) + deepcopy(new_entities)}
+                if changes:
+                    record['sourceObjectIdAdjustments'] = changes
+                record['candidate'], native_changes = complement_mapping_from_native(
+                    record['candidate'], assets, frames, scene_manifest)
+                if native_changes:
+                    record['nativeMappingAdjustments'] = native_changes
                 record["fieldIssues"] = mapping_field_issues(record["candidate"])
-                validate_mapping(record["candidate"], assets, frames, scene_manifest)
+                try:
+                    validate_mapping(record["candidate"], assets, frames, scene_manifest)
+                except GuideError:
+                    # Some providers return an incomplete canonical list alongside
+                    # a complete versioned list. Accept only an exact extension of
+                    # the canonical entries, after the usual full validation.
+                    raw = record['rawCandidate']
+                    primary = raw.get('entities') if isinstance(raw, dict) else None
+                    viable = []
+                    if isinstance(primary, list) and all(isinstance(e, dict) and isinstance(e.get('id'), str) for e in primary):
+                        for key, alternate in raw.items():
+                            if not re.fullmatch(r'entities_v[0-9]+', key) or not isinstance(alternate, list):
+                                continue
+                            ids = [e.get('id') for e in alternate if isinstance(e, dict)]
+                            if len(ids) != len(alternate) or len(ids) != len(set(ids)) or not all(e in alternate for e in primary):
+                                continue
+                            proposed = {k: deepcopy(v) for k, v in raw.items() if not re.fullmatch(r'entities_v[0-9]+', k)}
+                            proposed['entities'] = deepcopy(alternate)
+                            try:
+                                proposed = normalize_model_mapping(proposed)
+                                proposed, adjustments = apply_source_id_policy(proposed)
+                                validate_mapping(proposed, assets, frames, scene_manifest)
+                            except (GuideError, ValueError, TypeError, KeyError, AttributeError):
+                                continue
+                            viable.append((key, proposed, adjustments))
+                    if len(viable) != 1:
+                        raise
+                    key, record['candidate'], adjustments = viable[0]
+                    record['entityListNormalization'] = {'source': key, 'reason': 'complete_consistent_entity_list'}
+                    if adjustments:
+                        record['sourceObjectIdAdjustments'] = adjustments
+                    record['fieldIssues'] = mapping_field_issues(record['candidate'])
                 record["issue"] = None
             except (GuideError, ValueError, TypeError, KeyError, AttributeError, httpx.HTTPError) as error:
-                record["issue"] = type(error).__name__ if isinstance(error, httpx.HTTPError) else str(error)
+                if isinstance(error, httpx.HTTPStatusError):
+                    record["issue"] = f"모델 요청 실패: HTTP {error.response.status_code}"
+                elif isinstance(error, httpx.HTTPError):
+                    record["issue"] = f"모델 통신 실패: {type(error).__name__}"
+                else:
+                    record["issue"] = str(error)
             if check_owner:
                 check_owner()
+            status_candidate = prior_mapping if target_indices and record.get('issue') else record.get('candidate')
+            bundle['assetMappingInventory'] = assess_asset_inventory(
+                inventory, status_candidate, frames, scene_manifest)
+            record['assetMappingStatus'] = [
+                {'index': item['index'], 'registrationStatus': item['registrationStatus'],
+                 'linkStatus': item['linkStatus'], 'analysisStatus': item['analysisStatus']}
+                for item in bundle['assetMappingInventory']]
             attempts.append(record)
             consider(record["candidate"])
             bundle["mappingStatus"] = "repairing" if record["issue"] else "ready"
@@ -807,40 +1189,126 @@ class SpatialGuideBuilder:
                 len(item[1]), -min(entity["confidence"] for entity in item[0]["entities"]),
             ))
             bundle.update(mapping=mapping, mappingWarnings=warnings, mappingStatus="ready_with_warnings")
+            bundle['assetMappingInventory'] = assess_asset_inventory(inventory, mapping, frames, scene_manifest)
             save()
             logging.getLogger("uvicorn.error").info(
                 "[asset-mapping] 보정 3회 완료 · 보정 필요 %d건 · 이미지 생성 계속", len(warnings),
             )
             return
         bundle["mappingStatus"] = "unresolved"
+        error_attempts = [
+            {"attempt": attempt.get("attempt", index + 1),
+             "mode": attempt.get("mode"),
+             "issue": str(attempt.get("issue") or "필수 매핑 데이터 누락")[:1200]}
+            for index, attempt in enumerate(attempts)
+        ]
+        bundle["mappingErrorSummary"] = {"attempts": error_attempts}
         save()
-        last_issue = attempts[-1].get("issue", "필수 매핑 데이터 누락") if attempts else "필수 매핑 데이터 누락"
+        attempt_details = " / ".join(
+            f"{item['attempt']}차: {item['issue']}" for item in error_attempts
+        ) or "검증 결과가 없습니다."
         raise GuideError(
-            f"에셋 매핑 보정·재생성 {total_limit}회 후에도 필수값을 완성하지 못했습니다. "
-            f"마지막 원인: {last_issue}. 저장된 mappingAttempts를 확인하세요."
+            f"에셋 매핑을 {len(error_attempts)}회 시도했으나 완료하지 못했습니다. "
+            f"{attempt_details}. 상세 정보는 mappingAttempts를 확인하세요."
         )
 
-    async def detect_asset_parts(self, assets):
+    async def detect_asset_parts(self, assets, *, on_attempt=None):
         characters = [
             (index, asset) for index, asset in enumerate(assets, 1) if asset["role"] == "character"
         ]
         analysis = {"sheets": []}
-        if characters:
-            analysis = await self.analyze(
-                "spatial_character_sheet",
-                CAST_SHEET_SCHEMA,
+        if not characters:
+            return character_asset_parts(assets, analysis)
+        layout_hints = []
+        for index, asset in characters:
+            try:
+                with Image.open(asset['path']) as image:
+                    hint = detect_sheet_layout(image)
+            except (OSError, ValueError):
+                hint = None
+            if hint:
+                layout_hints.append({'imageIndex': index, **hint})
+        prompt = (
                 "Inspect these character references for structured sheets of DIFFERENT named or visually distinct people. "
                 "Return one sheets entry per input, using these original imageIndex values in order: "
                 + json.dumps([index for index, _ in characters])
                 + ". "
                 "For a multi-person sheet locate one non-overlapping rectangular panel per distinct person. "
+                "Inspect rows as well as columns: a top row with one person's front/back/face views "
+                "and a bottom row with another person's views is TWO members. Each member's panel "
+                "must include their entire row, not just a face or one turnaround view. "
+                "Also inspect vertical columns: a column containing one person's portrait, front/back "
+                "outfits and details is ONE member, and adjacent columns with distinct people are separate members. "
+                "Choose row or column grouping from the content, not the image aspect ratio. "
                 "Include their face and full-body turnaround views together in their panel. Use the label printed "
                 "for that person when readable. Front, side, back and detail views of one person are a single identity. "
                 "For a single-person sheet or a group photo without separable panels return an empty members list. "
-                "bbox is [left, top, right, bottom] relative to the full input image in the range 0 to 1.",
-                [Path(asset["path"]) for _, asset in characters],
+                "bbox is [left, top, right, bottom] relative to the full input image in the range 0..1. "
+                "Use normalized fractions, never pixel or 0..1000 coordinates. "
+                "Labels must be nonempty and unique within each sheet; use distinct descriptive labels "
+                "when there are no printed names."
+                " Python detected the following regular divider candidates (xyxy normalized coordinates): "
+                + json.dumps(layout_hints, ensure_ascii=False)
+                + ". These are layout hints, not confirmed people: verify each region visually and group "
+                  "multiple views of the same identity. Do not treat outfit details as extra people."
+        )
+        feedback = ''
+        for attempt in range(1, 3):
+            analysis = await self.analyze(
+                "spatial_character_sheet", CAST_SHEET_SCHEMA, prompt + feedback,
+                [Path(asset['path']) for _, asset in characters],
             )
-        return character_asset_parts(assets, analysis)
+            raw_analysis = deepcopy(analysis)
+            analysis = normalize_character_sheet_indices(analysis, characters)
+            record = {'attempt': attempt, 'rawCandidate': raw_analysis, 'candidate': deepcopy(analysis), 'issue': None}
+            try:
+                parts = character_asset_parts(assets, analysis)
+            except (GuideError, ValueError, TypeError, KeyError, AttributeError) as error:
+                record['issue'] = str(error)
+                if on_attempt:
+                    on_attempt(record)
+                if attempt == 2:
+                    raise GuideError('캐릭터 통합 시트 분석 2회 실패: ' + str(error)) from error
+                feedback = ('\nCorrect the previous sheet analysis using the same images. '
+                            'Do not merge different people or guess missing image regions. Error: '
+                            + str(error) + '\nPrevious response: '
+                            + json.dumps(analysis, ensure_ascii=False))
+                continue
+            if on_attempt:
+                on_attempt(record)
+            empty_indices = {sheet['imageIndex'] for sheet in analysis['sheets'] if not sheet['members']}
+            hint_counts = {hint['imageIndex']: hint['count'] for hint in layout_hints}
+            conflicts = {sheet['imageIndex'] for sheet in analysis['sheets']
+                         if sheet['imageIndex'] in hint_counts
+                         and len(sheet['members']) != hint_counts[sheet['imageIndex']]}
+            empty_indices |= conflicts
+            if empty_indices and attempt == 1:
+                first_analysis = deepcopy(analysis)
+                empty_indices_first = empty_indices
+                feedback = (
+                    '\nRECHECK all images with empty members, imageIndex=' + json.dumps(sorted(empty_indices))
+                    + '. Count distinct faces and identities. Independently inspect entire rows AND columns, '
+                    'including face portraits paired with headless front/back outfits and detail panels. '
+                    'A row or column is one person; multiple views of the same person remain one identity. '
+                    'Return empty members only when the image contains one person or no separable panels. '
+                    'Return the complete sheets list for all inputs.'
+                )
+                continue
+            if attempt == 2 and 'first_analysis' in locals():
+                conflicts &= empty_indices_first
+            if conflicts and attempt == 2:
+                raise GuideError('캐릭터 시트 영역과 인물 분석 결과가 일치하지 않습니다. '
+                                 '시트 구분선과 인물별 영역을 확인해 주세요. '
+                                 + json.dumps({'imageIndices': sorted(conflicts),
+                                               'layoutHints': layout_hints}, ensure_ascii=False))
+            if attempt == 2 and 'first_analysis' in locals():
+                # Only reconsider sheets initially classified as single. Preserve
+                # confirmed multi-person panels from the first independent pass.
+                revised = {sheet['imageIndex']: sheet for sheet in analysis['sheets']}
+                merged = {'sheets': [revised[sheet['imageIndex']] if sheet['imageIndex'] in empty_indices_first
+                                     else sheet for sheet in first_analysis['sheets']]}
+                parts = character_asset_parts(assets, merged)
+            return parts
 
     async def select_key_scenes(
         self, source, directory, *, limit, brief="", scene_manifest=None, on_sampled=None
@@ -974,7 +1442,10 @@ class SpatialGuideBuilder:
         check_owner=None,
         selection="uniform",
         scenario_frames=None,
+        opening_state="",
+        mapping_request=None,
     ):
+        generation_limit = ENDPOINT_GENERATION_ATTEMPTS if input_format in ("first_frame", "first_last") else GUIDE_GENERATION_ATTEMPTS
         directory = Path(directory)
         directory.mkdir(parents=True, exist_ok=True)
         if directory.is_symlink():
@@ -983,6 +1454,8 @@ class SpatialGuideBuilder:
             raise GuideError("공간 가이드를 만들 캐릭터·배경 에셋을 등록하세요.")
         signature = {
             "version": GUIDE_VERSION,
+            "openingState": opening_state,
+            "mappingRequest": mapping_request,
             "model": self.model,
             "imageModel": self.image_model,
             "brief": brief,
@@ -1077,8 +1550,15 @@ class SpatialGuideBuilder:
         )
         save()  # Retain/register sampled files even if subsequent mapping fails.
         original_assets = assets
+        if 'inputAssetInventory' not in bundle:
+            bundle['inputAssetInventory'] = build_asset_inventory(original_assets)
+            save()
         if "assetParts" not in bundle and "mapping" not in bundle:
-            bundle["assetParts"] = await self.detect_asset_parts(assets)
+            def save_sheet_attempt(record):
+                bundle.setdefault('assetPartAttempts', []).append(record)
+                save()
+
+            bundle["assetParts"] = await self.detect_asset_parts(assets, on_attempt=save_sheet_attempt)
             save()
         if "assetParts" in bundle:
             assets = await asyncio.to_thread(
@@ -1158,15 +1638,39 @@ class SpatialGuideBuilder:
                     ensure_ascii=False,
                 )
             )
+            analysis_sheets, sheet_refs = await asyncio.to_thread(create_analysis_sheets, assets, directory)
+            if len(frames) + len(analysis_sheets) > 4:
+                analysis_sheets, sheet_refs = await asyncio.to_thread(create_analysis_sheets, assets, directory, combined=True)
+            if len(frames) + len(analysis_sheets) > 4:
+                raise GuideError('에셋 매핑 프레임이 분석 이미지 4장 한도를 초과합니다. 가이드 수를 줄여 주세요.')
+            bundle['analysisSheetReferences'] = sheet_refs
+            save()
             await self.repair_mapping(
                 bundle, prompt,
                 [Path(asset["path"]) for asset in assets]
                 + [frame["path"] for frame in frames]
                 + [frame["path"] for frame in timeline],
                 assets, frames, scene_manifest, save, check_owner,
+                mapping_request=brief if mapping_request is None else mapping_request,
+                analysis_sheets=analysis_sheets, sheet_refs=sheet_refs,
             )
         validate_mapping(bundle["mapping"], assets, frames, scene_manifest,
                          allow_ambiguous=bool(bundle.get("mappingWarnings")))
+        bundle['assetMappingInventory'] = assess_asset_inventory(
+            build_asset_inventory(assets), bundle['mapping'], frames, scene_manifest)
+        unresolved = [{'index': row['index'], 'assetId': row['assetId'],
+                       'registrationStatus': row['registrationStatus'],
+                       'linkStatus': row['linkStatus'], 'analysisStatus': row['analysisStatus']}
+                      for row in bundle['assetMappingInventory']
+                      if row['registrationStatus'] != 'registered' or row['linkStatus'] != 'linked'
+                      or row['analysisStatus'] != 'complete']
+        if unresolved:
+            bundle['mappingStatus'] = 'ready_with_warnings'
+            bundle['mappingQualityWarnings'] = {'unresolvedAssets': unresolved}
+            save()
+            logging.getLogger('uvicorn.error').warning('[asset-mapping] 연결·공간 분석 조건 미달 · 경고 기록 후 계속 진행 · %s',
+                                                       json.dumps(unresolved, ensure_ascii=False))
+        save()
         for frame in frames:
             index = frame["index"]
             entry = next((item for item in bundle["guides"] if item["index"] == index), None)
@@ -1180,7 +1684,8 @@ class SpatialGuideBuilder:
                 bundle["guides"].append(entry)
             target = directory / entry["name"]
             previous = next((item for item in bundle["guides"]
-                             if item["index"] == index - 1 and item.get("status") == "verified"), None)
+                             if item["index"] == index - 1 and item.get("status") in ("verified", "invalid", "excluded")
+                             and item.get("sha256")), None)
             previous_path = directory / previous["name"] if previous else None
             if previous_path is not None and (
                 not previous_path.is_file()
@@ -1190,7 +1695,7 @@ class SpatialGuideBuilder:
             while entry["status"] not in ("excluded", "unknown", "requesting"):
                 if (
                     entry["status"] == "invalid"
-                    and entry.get("generationAttempts", 1) >= GUIDE_GENERATION_ATTEMPTS
+                    and entry.get("generationAttempts", 1) >= generation_limit
                 ):
                     entry["status"] = "excluded"
                     save()
@@ -1229,7 +1734,7 @@ class SpatialGuideBuilder:
                             {
                                 **{
                                     key: entity[key]
-                                    for key in ("id", "label", "appearance", "assetIndices")
+                                    for key in ("id", "label", "assetIndices")
                                 },
                                 "bbox": sample["bbox"],
                             }
@@ -1268,27 +1773,41 @@ class SpatialGuideBuilder:
                             for position, (original, _) in enumerate(visible_assets)
                         }
                     for entity in entities:
+                        entity['assetReferences'] = [
+                            {'image': image_number, 'role': role}
+                            for image_number, role in sorted({
+                                (edit_indices[value], assets[value - 1]['role'])
+                                for value in entity['assetIndices']
+                            })
+                        ]
                         entity["editImageNumbers"] = sorted(
                             {edit_indices[value] for value in entity.pop("assetIndices")}
                         )
                     prompt = (
                         "Edit Image 1 as an exact camera-layout reconstruction at this SINGLE instant. "
-                        "Image 1 is the authoritative layout: preserve its viewpoint, subject center coordinates, bounding-box scale, orientation, supports, contact and occlusion. "
-                        "Original asset images supply appearance only, NEVER their subject scale, position or pose. "
-                        "Rebuild visible entities with the mapped asset anatomy/materials; remove wooden/proxy shapes and make a coherent environment. "
+                        "Resolve input conflicts by these separate authorities, before considering scene descriptions: "
+                        "1. ASSET APPEARANCE: The numbered asset references are authoritative for identity, face, hair, clothing, anatomy and materials. "
+                        "Rebuild each visible entity from its assetReferences/editImageNumbers. Image 1 supplies NO final character appearance. "
+                        "Replace its neutral proxy bodies completely; do not retain proxy geometry with a texture applied. "
+                        "2. LAYOUT GEOMETRY: Image 1 alone is authoritative for camera viewpoint, framing, facing direction, subject centers, "
+                        "approximate bounding-box scale, poses, supports, contact and occlusion. "
+                        "Never copy the asset images' subject scale, position or pose. "
+                        "Use background asset images for environment appearance and furnishings, but NEVER adopt a background asset camera "
+                        "or reverse the view to match its composition. Preserve Image 1's front/side/back view. "
+                        "3. SCENE STATE: Use sceneBrief for location and action at this timestamp within those appearance and layout constraints. "
                         "Keep a perched animal perched if perched in Image 1. Do not execute later actions or invent a more dramatic composition. "
-                        "Use the scene brief for the location and action at this timestamp; mapped appearance fields define the visible entities. "
                         "Maintain connected indoor/outdoor geography and persistent doorway, wall and prop structures across endpoints. "
                         "An exterior appearance reference can establish the adjacent building while the current layout remains indoors. "
                         "The normalized bbox for each entity is a spatial constraint: retain its screen center and approximate extent with natural asset proportions. "
+                        "Rebuild this instant's environment from sceneBrief, replacing neutral proxy backgrounds. "
                         "Only listed visible entities may appear. Excluded/offscreen entities MUST remain absent, even when in the overall story. "
                         "No panels, labels, text annotations or reference sheets. "
                         "Snapshot constraints: "
                         + json.dumps(
                             {
                                 "time": frame["time"],
-                                "sceneBrief": brief,
-                                "cameraSummary": bundle["mapping"].get("cameraSummary", ""),
+                                "sceneBrief": scene_brief_for_frame(index, opening_state, brief),
+                                "cameraSummary": "Use the exact camera of Image 1.",
                                 "visibleEntities": entities,
                                 "excludedEntities": hidden,
                             },
@@ -1349,13 +1868,17 @@ class SpatialGuideBuilder:
                     save()
                 if entry["status"] != "verified":
                     try:
-                        verification = await self.analyze(
-                            "spatial_guide_verification",
-                            VERIFY_SCHEMA,
+                        verify_sheets, verify_refs = await asyncio.to_thread(create_analysis_sheets, assets, directory)
+                        if 2 + len(verify_sheets) + int(previous_path is not None) > 4:
+                            verify_sheets, verify_refs = await asyncio.to_thread(create_analysis_sheets, assets, directory, combined=True)
+                        verification, verification_attempts = await verify_guide_response(
+                            self.analyze,
                             "Verify the edited guide: first image=rough layout, next "
-                            + str(len(assets))
-                            + "=assets, then an optional previous-scene reference, final image=generated spatial guide. "
+                            + str(len(verify_sheets))
+                            + "=numbered asset contact sheets, then an optional previous-scene reference, final image=generated spatial guide. "
+                            "Contact sheet regions and source references: " + json.dumps(verify_refs, ensure_ascii=False) + ". "
                             "Check only entities expected visible in this frame; preserve hidden/offscreen state. Judge asset identity/proportions/materials, camera composition/positions, removal of proxy geometry, and intended cast count. "
+                            "Use asset images as the appearance authority and the source layout only as the geometry/camera authority; mapping appearance text cannot override asset images. "
                             "A textured proxy or extra mannequin is a failure. Do not require an off-screen entity to appear. For each issue specify the correction needed from the original layout, including perspective and overlap when relevant. "
                             "Check locationContinuityPreserved against the scene brief and source layout: retain the indoor/outdoor "
                             "location and connected doorways at this timestamp. Use the previous-scene reference, when present, "
@@ -1367,20 +1890,21 @@ class SpatialGuideBuilder:
                             "Mapping and frame: "
                             + json.dumps(
                                 {"mapping": bundle["mapping"], "index": index, "time": frame["time"],
-                                 "sceneBrief": brief, "previousSceneIncluded": previous_path is not None,
+                                 "sceneBrief": scene_brief_for_frame(index, opening_state, brief), "previousSceneIncluded": previous_path is not None,
                                  "previousSceneIndex": previous["index"] if previous else None},
                                 ensure_ascii=False,
                             ),
-                            [frame["path"]] + [Path(asset["path"]) for asset in assets]
+                            [frame["path"]] + list(verify_sheets)
                             + ([previous_path] if previous_path else [])
-                            + [target],
+                            + [target], model=self.model, index=index,
                         )
-                        if not isinstance(verification, dict) or not isinstance(
-                            verification.get("issues"), list
-                        ):
-                            raise GuideError("공간 가이드 검증 응답 형식이 올바르지 않습니다.")
+                        entry['verificationAttempts'] = verification_attempts
                     except (httpx.HTTPError, RuntimeError) as error:
-                        entry.update(status="excluded", verificationIssue=type(error).__name__)
+                        diagnostic = guide_verification_diagnostic(error, model=self.model, index=index)
+                        if getattr(error, 'verification_attempts', None):
+                            entry['verificationAttempts'] = error.verification_attempts
+                        entry.update(status="excluded", verificationIssue=type(error).__name__, verificationDiagnostic=diagnostic)
+                        logging.getLogger('uvicorn.error').warning('[spatial-guide-verification] 검증 실패 · %s', json.dumps(diagnostic, ensure_ascii=False))
                         save()
                         break
                     valid = all(
@@ -1397,9 +1921,21 @@ class SpatialGuideBuilder:
                     entry.update(
                         status="verified" if valid else "invalid", verification=verification
                     )
+                    if not valid:
+                        checks = ('assetIdentityPreserved', 'cameraCompositionPreserved', 'proxyShapesRemoved',
+                                  'castCountPreserved', 'locationContinuityPreserved', 'sceneStatePreserved')
+                        diagnostic = {'stage': 'guide_verification', 'index': index, 'model': self.model,
+                                      'code': 'verification_rejected',
+                                      'failedFields': [key for key in checks if verification.get(key) is False],
+                                      'missingFields': [key for key in checks if key not in verification],
+                                      'invalidFields': [key for key in checks if key in verification and type(verification[key]) is not bool]}
+                        entry['verificationDiagnostic'] = diagnostic
+                        logging.getLogger('uvicorn.error').warning('[spatial-guide-verification] 검증 불일치 · %s', json.dumps(diagnostic, ensure_ascii=False))
+                    else:
+                        entry.pop('verificationDiagnostic', None)
                     save()
                     if not valid:
-                        continue
+                        break
                 break
         bundle["status"] = (
             "ready"

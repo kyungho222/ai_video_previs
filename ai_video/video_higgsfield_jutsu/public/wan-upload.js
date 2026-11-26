@@ -82,7 +82,7 @@ function updateControls() {
     $('spatial-input').value = 'references';
     $('guide-count').value = 'auto';
   }
-  if (endpoints) $('spatial-input').value = 'first_last';
+  if (endpoints) $('spatial-input').value = 'first_frame';
   if (opening) $('spatial-input').value = 'first_frame';
   if (mode === 'spatial_motion') $('spatial-input').value = 'references';
   $('spatial-input').disabled = locked || !spatial || mode === 'spatial_motion' || opening || endpoints;
@@ -103,7 +103,7 @@ function updateControls() {
   }
   const available = !(spatial || comparing) || config?.spatialGuidesConfigured;
   $('guide-help').textContent = spatial && !available ? '공간 가이드에는 서버의 OPENAI_API_KEY 설정이 필요합니다.' : mode === 'spatial' ? '에셋을 적용한 공간 이미지만 전달합니다. MP4는 영상모델에 보내지 않으며 세부 동작은 모델이 구성합니다.' : mode === 'spatial_motion' ? '공간 이미지는 외형·구도, MP4는 동작 참고로 전달합니다. 동작이 더 강하게 고정될 수 있습니다.' : '원본 3D 장면에서 카메라·배치 전용 MP4를 렌더링합니다. 에셋과 행동 텍스트로 캐릭터의 세부 동작을 새로 생성합니다.';
-  if (endpoints) $('guide-help').textContent = !available ? '상세 분석·이미지 합성에는 서버의 OPENAI_API_KEY 설정이 필요합니다.' : '카메라·동선 상세 텍스트와 에셋이 적용된 시작·종료 이미지로 생성합니다. 캐릭터의 세부 동작은 영상모델이 구성합니다.';
+  if (endpoints) $('guide-help').textContent = !available ? '상세 분석·이미지 합성에는 서버의 OPENAI_API_KEY 설정이 필요합니다.' : '카메라·동선 상세 텍스트와 에셋이 적용된 시작 이미지 1장과 마무리 텍스트로 생성합니다. 캐릭터의 세부 동작은 영상모델이 구성합니다.';
   if (continuous) $('guide-help').textContent = '첫 씬을 기준으로 시작하며, 후속 씬은 행동·대사·구도 의도를 참고해 직전 위치와 움직임에서 이어갑니다. 명시적인 컷·장소 변경은 유지합니다.';
   if (comparing) {
     $('guide-help').textContent = !available ? '캐릭터 비교에는 서버의 OPENAI_API_KEY 설정이 필요합니다.' :
@@ -112,8 +112,8 @@ function updateControls() {
   }
   if (spatial && $('spatial-input').value === 'references') $('guide-help').textContent += ' AI가 씬·카메라·등장·배치 변화와 최종 구도를 선택합니다. 에셋 ' + assets.length + '장 기준 가이드는 최대 ' + Math.max(0, 10 - assets.length) + '장입니다. 이미지 생성 수에 따라 요금과 시간이 늘어납니다.';
   if (spatial && $('spatial-input').value !== 'references') $('guide-help').textContent += ' 시작·종료 방식은 별도 에셋 이미지를 보내지 않으므로, 해당 프레임 밖 캐릭터의 외형 유지가 약해질 수 있습니다.';
-  const endpointsUnsupported = endpoints && config && !config.spatialInputFormats?.includes('first_last');
-  if (endpointsUnsupported) $('guide-help').textContent = '선택 모델이 시작·종료 이미지 입력을 지원하지 않습니다.';
+  const endpointsUnsupported = endpoints && config && !config.spatialInputFormats?.includes('first_frame');
+  if (endpointsUnsupported) $('guide-help').textContent = '선택 모델이 시작 이미지 입력을 지원하지 않습니다.';
   const active = [...jobs.values()].some(job => !terminal(job) && job.source.uploadedId === selectedId);
   $('generate').disabled = endpointsUnsupported || busy || !config?.configured || (!pending && (!selected() || active || !available));
   $('generate').textContent = pending ? '동일 요청으로 접수 확인' : active ? '선택한 프리비즈 생성 진행 중' : spatial ? '공간 가이드 생성 후 영상 생성' : '영상 생성';
@@ -438,6 +438,7 @@ $('generation-form').onsubmit = async event => {
       provider: $('video-provider').value,
       model: config.model,
       referenceMode: $('reference-mode').value,
+      allowUnverifiedGuides: $('allow-unverified-guides').checked,
       characterMotion: 'independent',
       sceneProjectId: $('scene-project').value.trim() || undefined,
       spatialInput: $('spatial-input').value,

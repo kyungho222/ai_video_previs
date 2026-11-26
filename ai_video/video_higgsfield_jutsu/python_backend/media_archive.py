@@ -148,6 +148,9 @@ class MediaArchive:
                 "spatialManifestRef": job.get("spatialManifestRef")}
         if job.get("scenarioTitles"):
             data["scenarioTitles"] = job["scenarioTitles"]
+        for field in ('sceneDirection', 'directionAdjustments', 'sceneDesignBeforeCorrection', 'serverSceneCorrection', 'rawSceneDirection', 'rawSceneModelResponse', 'normalizedSceneDirection', 'normalizationChanges', 'canonicalSceneStatus', 'intentQuality', 'cameraQuality'):
+            if field in job:
+                data[field] = job[field]
         if job.get("workSettings"):
             data["workSettings"] = job["workSettings"]
         target = self.safe_path(Path("runtime/archive") / ("scene-" + job_id + ".json"))

@@ -62,6 +62,9 @@ def bind_source_identity(source, path, expected=None):
     return identity
 
 
+from .previs_reference import native_timeline
+
+
 def validate_timeline(value, duration):
     if not isinstance(value, dict):
         raise ValueError('Timeline must be an object')
@@ -109,20 +112,9 @@ def validate_timeline(value, duration):
 
 def timeline_prompt(plan, source_duration, output_duration, *, scene_flow_policy=None):
     scale = output_duration / source_duration
-    lines = [
-        'CAMERA AND STAGING TIMELINE',
-        'The first_frame and last_frame images establish the opening and final appearance and composition. '
-        'Follow the timestamped camera movement, viewing direction, framing, speed progression and character '
-        'travel below. Distinguish camera movement from subject movement and physical dolly from zoom. '
-        'Preserve the specified shot transitions and continuous paths. Reconstruct natural detailed performance '
-        'from the scene requirements and asset-based anatomy, including weight transfer, contacts and reactions. '
-        'The latest explicit user edits override conflicting source observations. '
-        'Keep cast identities, clothing, background and props consistent through every intermediate viewpoint. '
-        'Carry each segment end physical state into the next segment start: location, facing, contact, '
-        'prop state and travel velocity. Preserve explicitly requested cuts and time jumps.',
-        'Scene: ' + plan['summary'],
-        'Entities: ' + ' | '.join(plan['entities']),
-    ]
+    lines = ['CAMERA AND STAGING TIMELINE',
+             'first_frame fixes the opening; final composition is text only. Preserve timed camera/root paths and event order.',
+             'Scene: ' + plan['summary'], 'Entities: ' + ' | '.join(plan['entities'])]
     continuous = scene_flow_policy == FIRST_SCENE_CONTINUITY
     if continuous:
         lines[1] = SCENE_FLOW_RULES
@@ -132,7 +124,7 @@ def timeline_prompt(plan, source_duration, output_duration, *, scene_flow_policy
         lines.append(f"{segment['start'] * scale:.3f}–{segment['end'] * scale:.3f}s " +
                      ' | '.join(name + '=' + segment[name] for name in SEGMENT_FIELDS))
         for key in ('startPhysicalState', 'endPhysicalState'):
-            if segment.get(key):
+            if segment.get(key) and 'unrecorded contact state is unknown' not in segment[key]:
                 if continuous and (index > 0 or key == 'endPhysicalState'):
                     lines.append('Physical-state intent (' + key + '): ' + segment[key]
                                  + ' | preserve contacts, held props and explicit changes; adapt absolute placement continuously')
@@ -145,9 +137,10 @@ def timeline_prompt(plan, source_duration, output_duration, *, scene_flow_policy
     return '\n'.join(lines)
 
 
-def endpoint_guides(guides):
+def endpoint_guides(guides, *, input_format="first_last"):
     ordered = sorted(guides, key=lambda guide: guide['index'])
-    if len(ordered) != 2 or [guide['index'] for guide in ordered] != [0, 1]:
+    required = [0] if input_format == 'first_frame' else [0, 1]
+    if [guide['index'] for guide in ordered] != required:
         raise ValueError('Both generated endpoint images are required')
     # The image builder marks a completed image excluded after exhausting
     # quality corrections. Keep it as an endpoint with a quality warning.
@@ -255,7 +248,7 @@ async def describe_previs(source, directory, *, request, model, brief, assets, n
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     frames = await asyncio.to_thread(sample_frames, source, directory,
-                                    min(64, max(12, math.ceil(duration * 3))), 'references')
+                                    min(16, max(6, math.ceil(duration))), 'references')
     context = {
         'brief': brief, 'sourceDuration': duration,
         'frames': [{'image': index, 'time': frame['time']} for index, frame in enumerate(frames, 1)],
@@ -286,7 +279,7 @@ async def describe_previs(source, directory, *, request, model, brief, assets, n
     )
     analyzer = SpatialGuideBuilder(request, None, model=model)
     feedback = ''
-    for attempt in range(3):
+    for attempt in range(2):
         if progress:
             progress(f'프리비즈 카메라·동선 상세 분석 {attempt + 1}/3')
         try:

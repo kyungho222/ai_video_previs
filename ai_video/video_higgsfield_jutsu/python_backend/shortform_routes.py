@@ -8,7 +8,8 @@ from fastapi import APIRouter, HTTPException, Request
 from .pipeline_log import log_request, logger
 from .prompt_filter import PromptFilterError
 from .shortform_scenario import generate_scenario
-from .stage_usage import submit_stage_usage
+from .scenario_admission import ScenarioAdmissionCache
+from .usage_registration import begin_scenario_usage
 from .work_settings import request_work_metadata, effective_chat_model
 
 
@@ -34,6 +35,7 @@ SCENARIO_REQUEST = {
 
 def create_shortform_router(service):
     router = APIRouter(prefix="/api/shortform", tags=["shortform"])
+    admission_cache = ScenarioAdmissionCache()
 
     @router.post("/scenario", openapi_extra={"requestBody": SCENARIO_REQUEST})
     @log_request("시나리오 생성")
@@ -60,14 +62,8 @@ def create_shortform_router(service):
         request_id = request.state.pipeline_id
         session_id = str(uuid4())
         scenario_job_id = str(uuid4())
-        usage_rows = []
-        usage_context = {
-            **request_work_metadata(body), 'usageLogEnabled': body.get('usageLogEnabled') is True,
-            'job_id': scenario_job_id, 'session_id': session_id,
-            'request_id': request_id, 'job_type': 'scenario_generation',
-        }
-        def capture_usage(row):
-            usage_rows.append(row)
+        usage = await begin_scenario_usage(service, body, job_id=scenario_job_id,
+                                           session_id=session_id, request_id=request_id)
         stage_state = 'failed'
         try:
             started = time.monotonic()
@@ -77,7 +73,8 @@ def create_shortform_router(service):
                         title=title.strip(), summary=summary.strip(), model=model,
                         api_key=service.config.get("OPENAI_API_KEY"), transport=service.transport,
                         request_id=request_id,
-                        usage_sink=capture_usage,
+                        usage_sink=usage.capture,
+                        admission_cache=admission_cache,
                     )
             except PromptFilterError as error:
                 raise HTTPException(error.status_code, detail=str(error)) from None
@@ -87,17 +84,17 @@ def create_shortform_router(service):
                         request_id, len(result["scenes"]), time.monotonic() - started)
             result["sessionId"] = service.scenarios.save({
                 "job_id": scenario_job_id,
+                **usage.snapshot_fields,
                 "title": title.strip(), "summary": summary.strip(), "scenes": result["scenes"],
                 "settings": {"model": model, "db_name": body.get("db_name", ""),
                              "chatbotid": body.get("chatbotid", "")},
             }, session_id=session_id)
             result['job_id'] = scenario_job_id
-            result['ai_usage'] = [{**row, 'job_id': scenario_job_id, 'session_id': session_id, 'request_id': request_id,
-                                   'job_type': 'scenario_generation'} for row in result.get('ai_usage', [])]
+            usage.annotate_result(result)
             stage_state = 'completed'
             return result
         finally:
-            submit_stage_usage(service.usage_database, usage_rows, usage_context, state=stage_state)
+            usage.finish(stage_state)
 
     @router.put("/scenario/{session_id}")
     async def update_scenario(session_id: str, request: Request):

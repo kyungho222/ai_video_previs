@@ -135,10 +135,12 @@ h1{font-size:21px;margin:3px 0}
       <select id="sf-model" name="model" aria-label="시나리오 생성 AI 모델" disabled><option value="">모델 목록 확인 중…</option></select>
     </label>
     <label class="sf-header-field">dbname
-      <input id="sf-db-name" type="text" spellcheck="false">
+      <input id="sf-db-name" type="text" spellcheck="false" list="sf-db-history" autocomplete="off">
+      <datalist id="sf-db-history"></datalist>
     </label>
     <label class="sf-header-field">chatbotid
-      <input id="sf-chatbotid" type="text" spellcheck="false">
+      <input id="sf-chatbotid" type="text" spellcheck="false" list="sf-chatbot-history" autocomplete="off">
+      <datalist id="sf-chatbot-history"></datalist>
     </label>
   </div>
   <div class="sf-workspace">
@@ -197,8 +199,65 @@ const $ = id => document.getElementById(id);
 
 const modelSelects = [$('chat-model'), $('sf-model')];
 const query = new URLSearchParams(location.search);
-$('sf-db-name').value = query.get('db_name') ?? '';
-$('sf-chatbotid').value = query.get('chatbotid') ?? '';
+const workHistoryKey = 'previs-console.work-settings.v1';
+const presetWorkSettings = [
+  {db_name: 'aniestkh', chatbotid: '6a905a5e-e697-43da-b4ab-67484c292eb9'},
+  {db_name: 'dev_user', chatbotid: '651ac4ef-9f0f-44d4-9f54-1062bd0194ea'}
+];
+let workHistory = [];
+let lastWorkSettings;
+try {
+  const saved = JSON.parse(localStorage.getItem(workHistoryKey) || '{}');
+  workHistory = Array.isArray(saved.history) ? saved.history.filter(item =>
+    item && typeof item.db_name === 'string' && typeof item.chatbotid === 'string') : [];
+  lastWorkSettings = workHistory[0];
+} catch { /* Storage may be disabled; presets still work. */ }
+for (const preset of presetWorkSettings) {
+  if (!workHistory.some(item => item.db_name === preset.db_name && item.chatbotid === preset.chatbotid)) {
+    workHistory.push(preset);
+  }
+}
+function renderWorkHistory() {
+  for (const [id, key, other] of [['sf-db-history', 'db_name', 'chatbotid'],
+                                ['sf-chatbot-history', 'chatbotid', 'db_name']]) {
+    $(id).replaceChildren(...workHistory.map(item => {
+      const option = document.createElement('option');
+      option.value = item[key];
+      option.label = item[other];
+      return option;
+    }));
+  }
+}
+function saveWorkSettings() {
+  const item = {db_name: $('sf-db-name').value.trim(), chatbotid: $('sf-chatbotid').value.trim()};
+  if (!item.db_name || !item.chatbotid) return;
+  workHistory = [item, ...workHistory.filter(previous =>
+    previous.db_name !== item.db_name || previous.chatbotid !== item.chatbotid)].slice(0, 20);
+  for (const preset of presetWorkSettings) {
+    if (!workHistory.some(previous => previous.db_name === preset.db_name && previous.chatbotid === preset.chatbotid)) {
+      workHistory.push(preset);
+    }
+  }
+  try { localStorage.setItem(workHistoryKey, JSON.stringify({history: workHistory})); } catch {}
+  renderWorkHistory();
+}
+const initialWorkSettings = lastWorkSettings || presetWorkSettings[0];
+$('sf-db-name').value = query.get('db_name') ?? initialWorkSettings.db_name;
+$('sf-chatbotid').value = query.get('chatbotid') ??
+  workHistory.find(item => item.db_name === $('sf-db-name').value)?.chatbotid ?? initialWorkSettings.chatbotid;
+for (const [id, key, otherId, otherKey] of [
+  ['sf-db-name', 'db_name', 'sf-chatbotid', 'chatbotid'],
+  ['sf-chatbotid', 'chatbotid', 'sf-db-name', 'db_name']
+]) {
+  $(id).addEventListener('change', () => {
+    const match = workHistory.find(item => item[key] === $(id).value.trim());
+    if (match) $(otherId).value = match[otherKey];
+    saveWorkSettings();
+  });
+}
+window.addEventListener('pagehide', saveWorkSettings);
+renderWorkHistory();
+saveWorkSettings();
 const getWorkSettings = (modelId = 'sf-model') => ({
   usageLogEnabled: $('usage-db-enabled')?.checked === true,
   model: $(modelId).value,
@@ -212,9 +271,21 @@ initShortform({request, getWorkSettings, ...previs});
 const activateHistory = initUsageHistory({request, apiUrl});
 if (['localhost', '127.0.0.1', '[::1]', '::1'].includes(location.hostname)) {
   $('usage-db-control').hidden = false;
-  $('usage-db-enabled').checked = false;
-  $('usage-db-enabled').addEventListener('change', () => {
+  const usageDbStorageKey = 'previs-console-usage-db-enabled';
+  try {
+    $('usage-db-enabled').checked = localStorage.getItem(usageDbStorageKey) === 'true';
+  } catch {
+    $('usage-db-enabled').checked = false;
+  }
+  const renderUsageDbState = () => {
     $('usage-db-state').textContent = $('usage-db-enabled').checked ? 'ON · 다음 생성 요청부터 등록' : 'OFF';
+  };
+  renderUsageDbState();
+  $('usage-db-enabled').addEventListener('change', () => {
+    try {
+      localStorage.setItem(usageDbStorageKey, String($('usage-db-enabled').checked));
+    } catch {}
+    renderUsageDbState();
   });
 }
 

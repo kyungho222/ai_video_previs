@@ -19,6 +19,7 @@ from .video_errors import MAX_REFERENCE_BYTES, VideoError, PromptLengthError
 from .video_media import inspect_video
 from .reference_audio import upload_reference_audio
 from .bgm import VOICE_ONLY
+from .voice_diagnostics import build_voice_diagnostics, log_voice_event
 from .scene_flow import FIRST_SCENE_CONTINUITY, SCENE_FLOW_RULES, continuous_guides
 from .creative_policy import KOREAN_ATMOSPHERE_RULE
 from .video_prompt import (
@@ -43,6 +44,7 @@ from .previs_timeline import (
     preserve_timeline,
     bind_source_identity,
     compact_timeline,
+    native_timeline,
 )
 from .character_direction import (
     character_records,
@@ -54,6 +56,7 @@ from .prompt_filter import apply_presentation_rules, attach_presentation_rules
 
 
 from .video_results import LostLease
+from .guide_gate import guide_decision
 
 def verified_guide_inputs(mode, spatial_input, guides, asset_count, image_limit):
     accepted = [guide for guide in guides if guide["status"] == "verified"]
@@ -172,13 +175,16 @@ async def _prepare_submission(self, job, owner, reference, folder, update):
     if options.get("previsTranscript") == "camera_timeline_v1":
         timeline_directory = folder / "camera-timeline"
         try:
-            transcript = await describe_previs(
+            stored = native_timeline((source_scene_reference(self.service, job['source']) or {}).get('sceneDesign'),
+                                     metadata.get('duration') or options['duration'])
+            transcript = ({'plan':stored, 'sourceDuration':metadata.get('duration') or options['duration'],
+                           'method':'stored_scene_design'} if stored else await describe_previs(
                 reference, timeline_directory, request=optimize_request, model=review_model,
                 brief=scene_prompt + "\n" + generation_prompt, assets=asset_files,
                 native=await self.native_scene_manifest(job["source"]),
                 cached=metadata.get("previsTranscript"),
                 progress=lambda message: update(message=message),
-            )
+            ))
         finally:
             for path in timeline_directory.glob("layout-*.png"):
                 safe = self.service.archive.safe_path(path.relative_to(self.root))
@@ -191,7 +197,7 @@ async def _prepare_submission(self, job, owner, reference, folder, update):
         camera_transcript = timeline_prompt(transcript["plan"], transcript["sourceDuration"],
                                             options["duration"], scene_flow_policy=scene_flow)
         update(metadata=metadata, message=("촬영 타임라인 분석 완료 · 씬 참조 이미지를 구성합니다."
-                                          if scene_flow else "촬영 타임라인 분석 완료 · 시작·종료 이미지를 구성합니다."))
+                                          if scene_flow else "촬영 타임라인 분석 완료 · 시작 이미지 1장을 구성합니다."))
     if comparison == "A":
         update(message="캐릭터 참조 이미지를 멤버별로 준비합니다.")
         guide_directory.mkdir(parents=True, exist_ok=True)
@@ -459,6 +465,12 @@ async def _prepare_submission(self, job, owner, reference, folder, update):
         len(input_report["attempts"]),
         json.dumps(input_report["issues"], ensure_ascii=False),
     )
+    voice_diagnostics = None
+    try:
+        voice_diagnostics = build_voice_diagnostics(job_id, {**options, "scenePrompt": scene_prompt}, direction, prepared["prompt"])
+        metadata["voiceDiagnostics"] = voice_diagnostics
+    except Exception as error:
+        logging.getLogger("uvicorn.error").warning("[음성 진단] job=%s 진단 기록 실패 · %s", job_id, type(error).__name__)
     metadata.update(
         submittedPrompt=prepared["prompt"],
         promptOptimization=prepared["optimization"],
@@ -541,6 +553,8 @@ async def _prepare_submission(self, job, owner, reference, folder, update):
     )
     if reference_audio:
         extra["reference_audio"] = reference_audio
+    if voice_diagnostics is not None:
+        log_voice_event(job_id, "모델 요청 직전", diagnostics=voice_diagnostics)
     task_id = await client.submit(
         reference_url,
         generation_prompt,
@@ -554,6 +568,7 @@ async def _prepare_submission(self, job, owner, reference, folder, update):
         final_prompt=prepared["prompt"],
         **extra,
     )
+    log_voice_event(job_id, "모델 요청 접수", model=options.get("model"), audioMode=options.get("audioMode"))
     update(provider_id=task_id, state="running", message="영상 생성 중입니다.")
     job = self.store.get(job_id)
     return job
@@ -638,7 +653,7 @@ async def _prepare_spatial_guides(
             guide["index"] == 0 and guide["status"] == "excluded" for guide in value["guides"]
         ):
             update(metadata=metadata)
-            raise GuideError("첫 씬 기준 이미지 검증 실패로 후속 이미지 생성을 중단했습니다.")
+            logging.getLogger('uvicorn.error').warning('[spatial-guides] job=%s 첫 씬 검증 경고 · 생성된 이미지로 계속 진행', job_id)
         expected = len(report["scenes"]) if report else options.get("spatialGuideCount", 3)
         verified = sum(item["status"] == "verified" for item in value["guides"])
         repairing = any(
@@ -691,23 +706,50 @@ async def _prepare_spatial_guides(
         check_owner=owner_check,
         selection=options.get("spatialGuideSelection", "uniform"),
         **({"scenario_frames": scenario_guides} if scenario_guides else {}),
+        mapping_request="\n".join(dict.fromkeys((scene_prompt,generation_prompt))),
+        opening_state=next(iter(((source_scene_reference(self.service, job['source']) or {}).get('sceneDesign') or {}).get('scenes',[])),{}).get('description',''),
     )
-    if options.get("sceneFlowPolicy") == FIRST_SCENE_CONTINUITY:
+    if not bundle.get('guides'):
+        raise GuideError('공간 가이드가 생성되지 않아 영상 생성을 중단했습니다.')
+    decisions = [(guide, guide_decision(guide, force=options.get('allowUnverifiedGuides') is True))
+                 for guide in bundle['guides']]
+    blocked = [{'index': guide.get('index'), 'reason': decision['reason'],
+                **({'diagnostic': guide['verificationDiagnostic']} if guide.get('verificationDiagnostic') else {})}
+               for guide, decision in decisions if decision['action'] == 'block']
+    if blocked:
+        metadata['guideGate'] = {'status': 'blocked', 'failures': blocked}
+        update(metadata=metadata)
+        raise GuideError('공간 가이드 검증에 실패해 영상 생성을 중단했습니다. '
+                         '결과를 확인한 후 강제 진행을 선택해 다시 요청할 수 있습니다. '
+                         + json.dumps(blocked, ensure_ascii=False))
+    overridden = [guide.get('index') for guide, decision in decisions if decision['action'] == 'override']
+    if overridden:
+        metadata['guideGate'] = {'status': 'continued_with_warnings', 'indices': overridden,
+                                'warnings': [{'index': guide.get('index'), 'reason': decision['reason'],
+                                              'diagnostic': guide.get('verificationDiagnostic')}
+                                             for guide, decision in decisions if decision['action'] == 'override']}
+        logging.getLogger('uvicorn.error').warning('[spatial-guides] job=%s 검증 조건 미달 · 경고 기록 후 계속 진행 indices=%s', job_id, overridden)
+        update(metadata=metadata)
+    if overridden:
+        accepted = list(bundle['guides'])
+        if not all(guide.get('name') and (guide_directory / guide['name']).is_file() for guide in accepted):
+            raise GuideError('강제 진행할 공간 가이드 이미지가 없습니다.')
+    elif options.get("sceneFlowPolicy") == FIRST_SCENE_CONTINUITY:
         try:
             accepted = continuous_guides(bundle["guides"])
         except ValueError as error:
             raise GuideError("첫 씬 기준 이미지를 검증하지 못했습니다. 후속 씬을 첫 장면으로 대체하지 않습니다.") from error
     elif options.get("previsTranscript"):
         try:
-            accepted, warnings = endpoint_guides(bundle["guides"])
+            accepted, warnings = endpoint_guides(bundle["guides"], input_format=spatial_input)
         except ValueError as error:
-            raise GuideError("시작·종료 이미지 준비가 완료되지 않았습니다.") from error
+            raise GuideError("요청한 입력 이미지 준비가 완료되지 않았습니다.") from error
         if not all((guide_directory / guide["name"]).is_file() for guide in accepted):
             raise GuideError("시작·종료 이미지 파일을 찾을 수 없습니다.")
         metadata["endpointQualityWarnings"] = warnings
         if warnings:
             logging.getLogger("uvicorn.error").info(
-                "[endpoint-guides] job=%s 보정 필요 indices=%s · 생성된 두 프레임으로 계속 진행",
+                "[endpoint-guides] job=%s 보정 필요 indices=%s · 생성된 입력 이미지로 계속 진행",
                 job_id, warnings,
             )
         update(metadata=metadata)

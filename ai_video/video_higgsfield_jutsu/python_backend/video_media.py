@@ -150,8 +150,18 @@ class VideoAssets:
         self.root = Path(root) / storage_subdir
         self.max_images = max_images
 
-    def save(self, content, role, name):
+    def save(self, content, role, name, *, source_object_id=None, label=None, appearance=None):
+        extras = {}
+        for key, value, limit in (('sourceObjectId', source_object_id, 256),
+                                  ('label', label, 120), ('appearance', appearance, 1000)):
+            if value is None or value == '':
+                continue
+            if not isinstance(value, str) or not value.strip() or len(value) > limit or any(ord(c) < 32 for c in value):
+                raise AssetError('에셋 연결 정보가 올바르지 않습니다.')
+            extras[key] = value.strip()
         if role == "audio":
+            if extras:
+                raise AssetError('음원에는 객체 연결 정보를 지정할 수 없습니다.')
             return self.save_audio(content, name)
         if role not in ROLES:
             raise AssetError("에셋 유형은 캐릭터, 배경, 기타, 음원 중에서 선택하세요.")
@@ -175,7 +185,7 @@ class VideoAssets:
             raise AssetError("유효한 이미지 파일을 읽을 수 없습니다.") from None
         extension = {"JPEG": ".jpg", "PNG": ".png", "WEBP": ".webp", "BMP": ".bmp"}[image_format]
         return self.write_asset(content, role, name, extension, Image.MIME[image_format],
-                                width=width, height=height)
+                                width=width, height=height, **extras)
 
     def save_audio(self, content, name):
         extension = Path(name or "").suffix.lower()

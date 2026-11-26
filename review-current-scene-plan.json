@@ -1,0 +1,330 @@
+{
+  "description": "A mixed-gender idol group (2 males, 1 female) cheering for students taking the CSAT (Suneung) in a bright, sunlit classroom setting.",
+  "subjects": [
+    {
+      "id": "male_1",
+      "label": "Male Idol 1",
+      "kind": "human",
+      "shape": "box",
+      "color": [
+        0.8,
+        0.8,
+        0.9
+      ],
+      "size": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "position": [
+        -2.0,
+        0,
+        0
+      ],
+      "yaw": 0
+    },
+    {
+      "id": "female_1",
+      "label": "Female Idol",
+      "kind": "human",
+      "shape": "box",
+      "color": [
+        0.9,
+        0.8,
+        0.8
+      ],
+      "size": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "position": [
+        0,
+        0,
+        0
+      ],
+      "yaw": 0
+    },
+    {
+      "id": "male_2",
+      "label": "Male Idol 2",
+      "kind": "human",
+      "shape": "box",
+      "color": [
+        0.8,
+        0.9,
+        0.8
+      ],
+      "size": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "position": [
+        2.0,
+        0,
+        0
+      ],
+      "yaw": 0
+    },
+    {
+      "id": "chalkboard",
+      "label": "Chalkboard",
+      "kind": "prop",
+      "shape": "box",
+      "color": [
+        0.1,
+        0.1,
+        0.1
+      ],
+      "size": [
+        4.0,
+        2.0,
+        0.1
+      ],
+      "position": [
+        0,
+        2.0,
+        0
+      ],
+      "yaw": 0
+    },
+    {
+      "id": "desk_1",
+      "label": "Desk",
+      "kind": "prop",
+      "shape": "box",
+      "color": [
+        0.5,
+        0.3,
+        0.1
+      ],
+      "size": [
+        1.2,
+        0.75,
+        0.6
+      ],
+      "position": [
+        -1.0,
+        0.375,
+        0
+      ],
+      "yaw": 0
+    }
+  ],
+  "tracks": [
+    {
+      "subject": "male_1",
+      "action": "idle",
+      "start": 0,
+      "end": 3,
+      "position": [
+        -2.0,
+        0,
+        0
+      ],
+      "yaw": 0,
+      "target": null
+    },
+    {
+      "subject": "male_1",
+      "action": "wave",
+      "start": 3,
+      "end": 4,
+      "position": [
+        -2.0,
+        0,
+        0
+      ],
+      "yaw": 0,
+      "target": null
+    },
+    {
+      "subject": "male_1",
+      "action": "idle",
+      "start": 4,
+      "end": 8,
+      "position": [
+        -1.5,
+        0,
+        0
+      ],
+      "yaw": 0,
+      "target": null
+    },
+    {
+      "subject": "male_1",
+      "action": "hand_heart",
+      "start": 8,
+      "end": 10,
+      "position": [
+        -1.5,
+        0,
+        0
+      ],
+      "yaw": 0,
+      "target": null
+    },
+    {
+      "subject": "female_1",
+      "action": "idle",
+      "start": 0,
+      "end": 4,
+      "position": [
+        0,
+        0,
+        0
+      ],
+      "yaw": 0,
+      "target": null
+    },
+    {
+      "subject": "female_1",
+      "action": "wave",
+      "start": 4,
+      "end": 5,
+      "position": [
+        0,
+        0,
+        0
+      ],
+      "yaw": 0,
+      "target": null
+    },
+    {
+      "subject": "female_1",
+      "action": "idle",
+      "start": 5,
+      "end": 8,
+      "position": [
+        0,
+        0,
+        0
+      ],
+      "yaw": 0,
+      "target": null
+    },
+    {
+      "subject": "female_1",
+      "action": "hand_heart",
+      "start": 8,
+      "end": 10,
+      "position": [
+        0,
+        0,
+        0
+      ],
+      "yaw": 0,
+      "target": null
+    },
+    {
+      "subject": "male_2",
+      "action": "idle",
+      "start": 0,
+      "end": 5,
+      "position": [
+        2.0,
+        0,
+        0
+      ],
+      "yaw": 0,
+      "target": null
+    },
+    {
+      "subject": "male_2",
+      "action": "wave",
+      "start": 5,
+      "end": 6,
+      "position": [
+        2.0,
+        0,
+        0
+      ],
+      "yaw": 0,
+      "target": null
+    },
+    {
+      "subject": "male_2",
+      "action": "idle",
+      "start": 6,
+      "end": 8,
+      "position": [
+        1.5,
+        0,
+        0
+      ],
+      "yaw": 0,
+      "target": null
+    },
+    {
+      "subject": "male_2",
+      "action": "hand_heart",
+      "start": 8,
+      "end": 10,
+      "position": [
+        1.5,
+        0,
+        0
+      ],
+      "yaw": 0,
+      "target": null
+    }
+  ],
+  "scenes": [
+    {
+      "title": "설레는 응원 준비",
+      "description": "The three idols stand side-by-side in a sunlit classroom, smiling brightly at the camera.",
+      "start": 0,
+      "end": 3,
+      "camera": {
+        "focus": [
+          "male_1",
+          "female_1",
+          "male_2"
+        ],
+        "framing": "full",
+        "movement": "locked",
+        "azimuth": 0,
+        "end_azimuth": 0,
+        "elevation": 0
+      }
+    },
+    {
+      "title": "진심 어린 응원 메시지",
+      "description": "Close-up shots of each member as they deliver their heartfelt messages.",
+      "start": 3,
+      "end": 6,
+      "camera": {
+        "focus": [
+          "male_1"
+        ],
+        "framing": "medium",
+        "movement": "track",
+        "azimuth": 0,
+        "end_azimuth": 0,
+        "elevation": 0
+      }
+    },
+    {
+      "title": "함께 외치는 파이팅",
+      "description": "The group gathers closer, shouting 'Fighting!' and making hand hearts together.",
+      "start": 6,
+      "end": 10,
+      "camera": {
+        "focus": [
+          "female_1"
+        ],
+        "framing": "medium",
+        "movement": "push",
+        "azimuth": 0,
+        "end_azimuth": 0,
+        "elevation": 0
+      }
+    }
+  ],
+  "background": [
+    0.9,
+    0.9,
+    0.85
+  ]
+}
