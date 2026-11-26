@@ -62,9 +62,46 @@ curl http://127.0.0.1:9000/health
 
 실제 공급사 인증과 영상 생성은 별도 확인이 필요합니다. /health는 프로세스 상태만 확인합니다.
 
+### Docker 레지스트리
+
+전체 서비스 이미지의 기본 저장소는 `registry.chatbaram.com/ai-pro-videocreate`입니다.
+`IMAGE_REPOSITORY` 환경변수로 다른 저장소를 지정할 수 있습니다.
+
+```bash
+# 빌드 PC: 로그인 후 빌드 및 업로드
+docker login registry.chatbaram.com
+bash deploy.sh 1.0.2
+bash deploy.sh push 1.0.2
+
+# 운영 서버: 다운로드 후 기존 볼륨을 유지하여 실행
+bash deploy.sh pull 1.0.2
+bash deploy.sh reload 1.0.2
+bash deploy.sh status
+bash deploy.sh auth-status
+```
+
+이미지는 API·콘솔·인증 모듈·사용량 DB 연결·영상 처리 도구와 Playwright/Chromium을 포함합니다.
+`.env`, `env.txt`, 인증 토큰·브라우저 프로필·생성 결과는 포함하지 않습니다.
+운영 서버의 `.env`와 기존 `ai_video/runtime`, `previs-auth` 볼륨을 사용합니다.
+컨테이너의 브라우저는 기본 headless이며, 초기 로그인은 준비된 영구 프로필이 필요합니다.
+이전 로컬 이미지 이름으로 롤백할 때는 `IMAGE_REPOSITORY=ai-pro-videocreate bash deploy.sh reload <버전>`을 사용합니다.
+
 ### Higgsfield 브라우저 자동 승인
 
-서버에 `JUTSU_AUTH_BROWSER_PROFILE`을 지정하면, 저장된 인증 복구에 실패해 새 권한 승인이
+ID·PW를 읽어 입력하는 자동 로그인은 제거했습니다. `.env`의 `id`, `password`는 인증 코드에서 사용하지 않습니다.
+기본 동작은 저장된 OAuth 토큰 복구·갱신이며, 재승인이 필요하면 콘솔의 연결 버튼으로 일반 브라우저에서 승인합니다.
+서버가 Chromium을 자동으로 여는 기능은 기본 OFF입니다. 기존 로그인 세션으로 승인 화면만 자동 처리해야 하는 경우에만
+`JUTSU_AUTH_BROWSER_AUTO_APPROVE=1`과 전용 프로필을 명시합니다. Google ID·PW 자동 입력은 지원하지 않습니다.
+
+인증 기능은 `ai_video/jutsu_auth` 패키지에서 관리합니다. `manager.py`는 연결 점검·자동 복구·
+브라우저 승인·준비 대기·종료를 담당하고, `routes.py`는 기존 `/api/jutsu/*` API를 제공합니다.
+메인 서비스는 관리자 초기화·시작·종료 및 라우터 등록만 수행합니다. 프리비즈와 영상 참조 준비는
+공통 인증 준비 함수를 호출하며, 준비 대기는 `JUTSU_AUTH_READY_TIMEOUT_SECONDS`(기본 300초,
+최대 600초)로 제한합니다. 인증 복구 때문에 이미 제출한 장면 변경 요청을 재전송하지 않습니다.
+새 OAuth 흐름은 이전 흐름의 600초 재시도 제한 없이 브라우저 승인 대상이 됩니다.
+OAuth SQLite와 브라우저 프로필의 기존 저장 위치는 유지됩니다.
+
+서버에 `JUTSU_AUTH_BROWSER_AUTO_APPROVE=1`과 `JUTSU_AUTH_BROWSER_PROFILE`을 지정하면, 저장된 인증 복구에 실패해 새 권한 승인이
 필요할 때 서버가 전용 Chromium을 띄웁니다. 설정된 콜백과 앱을 확인한 뒤 승인 화면에서
 **계속**을 누릅니다. 전용 프로필에 로그인 세션이 없다면 열린 브라우저에서 Higgsfield에
 로그인해야 합니다. 이후 실행에서도 같은 프로필을 사용합니다.
@@ -74,6 +111,7 @@ Windows 로컬 콘솔에서 활성화하는 예시입니다.
 ```powershell
 python -m pip install playwright
 python -m playwright install chromium
+$env:JUTSU_AUTH_BROWSER_AUTO_APPROVE = '1'
 $env:JUTSU_AUTH_BROWSER_PROFILE = Join-Path (Get-Location).Path 'ai_video/runtime/data/jutsu-browser-profile'
 .\start-local.ps1
 ```

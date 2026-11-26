@@ -1,4 +1,5 @@
 .env
+/env.txt
 .env.*
 !.env.example
 .git
@@ -14,6 +15,9 @@
 **/test_*.py
 .venv
 .verify
+.tmp
+**/.pytest_cache
+/# backup/
 *.log
 *.sqlite3
 **/*.sqlite3

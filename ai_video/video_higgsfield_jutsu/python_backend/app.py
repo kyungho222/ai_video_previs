@@ -10,9 +10,10 @@ import time
 from urllib.parse import urlparse
 
 from dotenv import dotenv_values
+from ai_video.jutsu_auth import AuthenticationManager, create_auth_router
 from ai_video.model_gateway import available_models, canonical_model, model_options
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Query
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 
 from .agent import JutsuAgent
 from .ai_usage import report_usage
@@ -70,13 +71,9 @@ class Service:
             ) from None
         if not 1 <= self.max_concurrent_jobs <= 64:
             raise ValueError("CONSOLE_MAX_CONCURRENT_JOBS must be an integer from 1 to 64.")
-        self.frontend = config.get(
-            "JUTSU_FRONTEND_URL", "https://api-aipro.chatbaram.com/v1/previs/previs-console01.html"
-        )
-        redirect = config.get(
-            "JUTSU_OAUTH_REDIRECT_URL",
-            "https://api-aipro.chatbaram.com/v1/previs/api/jutsu/callback",
-        )
+        self.auth = AuthenticationManager.from_config(config, client=python_client)
+        self.frontend = self.auth.frontend
+        redirect = self.auth.redirect_url
         self.origins = {
             urlparse(url).scheme + "://" + urlparse(url).netloc
             for url in (self.frontend, redirect, config.get("PUBLIC_ORIGIN") or self.frontend)
@@ -95,15 +92,7 @@ class Service:
             + ")"
         )
         self.hosts = {urlparse(url).hostname for url in self.origins}
-        if python_client is None:
-            from ai_video.jutsu_auth import create_client
-
-            python_client = create_client(
-                redirect, data_directory=config.get("JUTSU_AUTH_DATA_DIR") or None
-            )
-        self.client = python_client
-        self.auth_browser_profile = config.get("JUTSU_AUTH_BROWSER_PROFILE", "").strip()
-        self.auth_browser_headless = config.get("JUTSU_AUTH_BROWSER_HEADLESS") == "1"
+        self.client = python_client = self.auth.client
         self.default_model = (
             config.get("PREVIS_DEFAULT_CHAT_MODEL", "gpt-6.1-terra").strip() or "gpt-6.1-terra"
         )
@@ -116,79 +105,17 @@ class Service:
         ]
         self.chat_models = list(dict.fromkeys([self.default_model, *configured_models, *available_models()]))
         self.agent = agent or JutsuAgent(
-            python_client, config.get("OPENAI_API_KEY"), self.default_model, transport
+            python_client, config.get("OPENAI_API_KEY"), self.default_model, transport, authentication=self.auth
         )
         self.repositories = repositories if repositories is not None else local_repositories(self.root, transport=transport)
         self.store = self.repositories.previs_jobs
         self.tasks = set()
-        self._auth_check_lock = asyncio.Lock()
         self.slots = asyncio.Semaphore(self.max_concurrent_jobs)
         self.transport = transport
         self.archive = self.repositories.archive
         self.usage_history = self.repositories.history
         self.usage_database = UsageDatabase(config, runtime_base(self.root) / 'runtime/data/usage-db-outbox.sqlite3')
         self.scenarios = ScenarioSessions(runtime_base(self.root) / "runtime/data/scenario-sessions")
-
-    async def ensure_authentication(self):
-        """Restore once through the backend, including older transport implementations."""
-        async with self._auth_check_lock:
-            if self.client.status["state"] == "disconnected":
-                self.client.status.update(
-                    state="connecting",
-                    message="저장된 인증으로 Higgsfield 연결을 확인하고 있습니다.",
-                )
-            try:
-                checker = getattr(self.client, "check_connection", None)
-                if checker is not None:
-                    await checker()
-                else:
-                    await self.client.start()
-            except Exception:
-                self.client.status.update(
-                    state="disconnected", message="Higgsfield 연결을 자동으로 다시 확인합니다."
-                )
-                raise
-
-    async def maintain_authentication(self):
-        """Runs independently of all browsers for the lifetime of this API process."""
-        logger = logging.getLogger("uvicorn.error")
-        previous = None
-        next_browser_attempt = 0
-        while True:
-            state = "disconnected"
-            try:
-                await self.ensure_authentication()
-                state = self.client.status["state"]
-                marker = (state, self.client.status.get("message"))
-                if marker != previous:
-                    logger.info(
-                        "[previs-auth] state=%s %s", state, self.client.status.get("message", "")
-                    )
-                    previous = marker
-                if state == "authorizing" and self.auth_browser_profile and time.monotonic() >= next_browser_attempt:
-                    from ai_video.jutsu_auth.browser_approval import approve_with_browser
-
-                    next_browser_attempt = time.monotonic() + 600
-                    url = await self.client.authorize()
-                    if url:
-                        try:
-                            await approve_with_browser(
-                                url, self.client.redirect_url, self.auth_browser_profile,
-                                headless=self.auth_browser_headless,
-                            )
-                        except Exception as error:
-                            logger.warning("[previs-auth] 브라우저 자동 승인 미완료 (%s)", type(error).__name__)
-                    state = self.client.status["state"]
-            except asyncio.CancelledError:
-                raise
-            except Exception as error:
-                marker = ("check_error", type(error).__name__)
-                if marker != previous:
-                    logger.warning(
-                        "[previs-auth] 인증 상태 점검 재시도 예정 (%s)", type(error).__name__
-                    )
-                    previous = marker
-            await asyncio.sleep(1800 if state == "connected" else 5)
 
     async def maintain_media(self):
         while True:
@@ -352,7 +279,7 @@ class Service:
         for task in list(self.tasks):
             task.cancel()
         await asyncio.gather(*self.tasks, return_exceptions=True)
-        await self.client.close()
+        await self.auth.close()
 
 
 def create_api_router(*, root=DEFAULT_ROOT, python_client=None, agent=None, transport=None, repositories=None):
@@ -362,8 +289,7 @@ def create_api_router(*, root=DEFAULT_ROOT, python_client=None, agent=None, tran
     async def lifespan(app):
         maintenance = asyncio.create_task(service.maintain_media())
         service.tasks.add(maintenance)
-        authentication = asyncio.create_task(service.maintain_authentication())
-        service.tasks.add(authentication)
+        service.auth.start()
         usage_delivery = asyncio.create_task(service.usage_database.run())
         service.tasks.add(usage_delivery)
         for job in video_router.manager.store.unfinished():
@@ -392,55 +318,7 @@ def create_api_router(*, root=DEFAULT_ROOT, python_client=None, agent=None, tran
     router.video = video_router.manager
     router.wan = router.video
 
-    @router.get("/api/jutsu/status")
-    async def status():
-        # Initial/restoration requests must not keep returning untouched cached state.
-        # The background task still owns periodic checks; healthy reads do not ping.
-        if service.client.status["state"] == "disconnected":
-            try:
-                await service.ensure_authentication()
-            except (TimeoutError, RuntimeError):
-                pass
-        return {
-            **service.client.status,
-            "managedBy": "backend",
-            "authenticationRequired": service.client.status["state"] == "authorizing",
-        }
-
-    @router.get("/api/jutsu/connect")
-    async def connect():
-        try:
-            url = await service.client.authorize()
-        except (TimeoutError, RuntimeError) as exc:
-            raise HTTPException(
-                503, detail=str(exc) or "Higgsfield 인증 연결 시간이 초과되었습니다."
-            ) from None
-        return RedirectResponse(url or service.frontend, status_code=302)
-
-    @router.post("/api/jutsu/connect-browser")
-    async def connect_browser():
-        try:
-            url = await service.client.authorize()
-        except (TimeoutError, RuntimeError) as exc:
-            raise HTTPException(
-                503, detail=str(exc) or "Higgsfield 인증 연결 시간이 초과되었습니다."
-            ) from None
-        # Browser navigation belongs to the frontend, never a server-side Node helper.
-        return {"opened": False, "authorizationUrl": url, "status": service.client.status}
-
-    @router.get("/api/jutsu/callback")
-    async def callback(request: Request):
-        if request.query_params.get("error"):
-            raise HTTPException(
-                400, detail="Higgsfield 인증이 취소되거나 거절되었습니다. 다시 연결하세요."
-            )
-        try:
-            service.client.storage.answer(
-                request.query_params.get("code"), request.query_params.get("state")
-            )
-        except ValueError as exc:
-            raise HTTPException(400, detail=str(exc)) from None
-        return RedirectResponse(service.frontend, status_code=302)
+    router.include_router(create_auth_router(service.auth))
 
     @router.get("/api/chat/models")
     async def chat_models():
@@ -462,6 +340,12 @@ def create_api_router(*, root=DEFAULT_ROOT, python_client=None, agent=None, tran
         header_session_id = request.headers.get("sessionId")
         usage_database_name = body.get("db_name")
         body_session_id = body.get("sessionId")
+        lowercase_session_id = body.get("sessionid")
+        if body_session_id is not None and lowercase_session_id is not None and body_session_id != lowercase_session_id:
+            raise HTTPException(400, detail="sessionId와 sessionid가 일치하지 않습니다.")
+        if body_session_id is None:
+            body_session_id = lowercase_session_id
+        body = {**body, "sessionId": body_session_id}
         if header_session_id and body_session_id and header_session_id != body_session_id:
             raise HTTPException(400, detail="헤더와 본문의 sessionId가 일치하지 않습니다.")
         scenario_session_id = header_session_id or body_session_id
@@ -486,7 +370,7 @@ def create_api_router(*, root=DEFAULT_ROOT, python_client=None, agent=None, tran
             requirements = re.sub(r"^추가\s*요청사항\s*[:：]\s*", "", requirements).strip()
             body = {
                 **body,
-                **scenario["settings"],
+                **{key: value for key, value in scenario["settings"].items() if key != "model"},
                 "message": scenario_prompt(scenario) + ("\n\n추가 요청사항:\n" + requirements if requirements else ""),
                 "scenarioTitles": [scene["title"] for scene in scenario["scenes"]],
                 "sessionId": scenario_session_id,

@@ -10,6 +10,8 @@ usage() {
   bash deploy.sh 1.0.0 deploy   빌드 후 배포
   bash deploy.sh reload 1.0.0   기존 이미지로 배포 또는 롤백
   bash deploy.sh promote 1.0.0  reload와 동일
+  bash deploy.sh push 1.0.0     빌드된 이미지를 레지스트리에 업로드
+  bash deploy.sh pull 1.0.0     레지스트리에서 이미지 다운로드
   bash deploy.sh logs [--since 30m]
   bash deploy.sh status
   bash deploy.sh auth-status    Higgsfield 인증 상태 확인
@@ -22,7 +24,8 @@ version_valid() { [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][a-zA-Z0-9][a-zA-Z0-9.-
 require_version() {
     if ! version_valid "$1"; then echo '버전은 1.0.0 또는 1.0.0-rc1 형식이어야 합니다.' >&2; exit 1; fi
     export VERSION=$1
-    IMAGE="ai-pro-videocreate:$VERSION"
+    export IMAGE_REPOSITORY=${IMAGE_REPOSITORY:-registry.chatbaram.com/ai-pro-videocreate}
+    IMAGE="$IMAGE_REPOSITORY:$VERSION"
 }
 deploy() {
     docker image inspect "$IMAGE" >/dev/null
@@ -64,6 +67,11 @@ case "${1:-help}" in
     status) compose ps ;;
     auth-status) auth_status ;;
     down) compose down ;;
+    push|pull)
+        [ "$#" -eq 2 ] || { usage; exit 1; }
+        action=$1
+        require_version "$2"
+        compose "$action" video ;;
     reload|promote)
         [ "$#" -eq 2 ] || { usage; exit 1; }
         require_version "$2"

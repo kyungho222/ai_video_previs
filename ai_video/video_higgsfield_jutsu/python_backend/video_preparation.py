@@ -147,6 +147,7 @@ async def _prepare_submission(self, job, owner, reference, folder, update):
             self.service.client, project_id, folder / (owner + "-camera-staging.mp4"),
             metadata.get("cameraReference"), save_camera_reference,
             lambda message: update(message=message),
+            authentication=getattr(self.service, 'auth', None),
         )
         try:
             self.service.archive.track("camera-guide-" + job_id + "-" + owner,
