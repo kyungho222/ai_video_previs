@@ -13,7 +13,6 @@ from .ai_usage import TERMINAL_VIDEO_STATES, report_usage, usage_row
 from .usage_registration import record_video_usage
 from .work_settings import video_analysis_model
 from .bgm import mix_background_music
-from .voice_diagnostics import log_voice_event
 from .camera_reference import source_scene_reference
 
 
@@ -118,7 +117,6 @@ async def _wait_for_result(self, job, owner, reference, candidate, folder, updat
                 status=state.lower(), error_code=result.get("code"),
             ))
         if state == "SUCCEEDED":
-            log_voice_event(job_id, "모델 생성 완료", model=options.get("model"), audioMode=options.get("audioMode"))
             update(state="downloading", message="완성된 영상을 저장합니다.")
             url = result.get("video_url")
             if not isinstance(url, str):
@@ -126,12 +124,7 @@ async def _wait_for_result(self, job, owner, reference, candidate, folder, updat
             await client.download(url, candidate, max_bytes=500 * 1024 * 1024)
             if options.get("audioMode") == "bgm":
                 update(message="첨부 음원과 생성된 보이스를 합성합니다.")
-                try:
-                    await mix_background_music(candidate, self.assets, options["audioAssets"])
-                except Exception as error:
-                    log_voice_event(job_id, "첨부 음원 합성 실패", errorType=type(error).__name__)
-                    raise
-                log_voice_event(job_id, "첨부 음원 합성 완료", audioAssetCount=len(options.get("audioAssets") or []))
+                await mix_background_music(candidate, self.assets, options["audioAssets"])
             await self._review_completed_video(job, owner, reference, candidate, folder, update)
             if not self.store.publish_result(job_id, owner, candidate, folder / "wan.mp4"):
                 raise LostLease()
@@ -140,7 +133,6 @@ async def _wait_for_result(self, job, owner, reference, candidate, folder, updat
             finalize_video_usage(self, job_id)
             return
         if state in ("FAILED", "CANCELED", "UNKNOWN"):
-            log_voice_event(job_id, "모델 생성 종료", model=options.get("model"), providerState=state, errorCode=result.get("code"))
             message = client.failure_message(result)
             metadata = {**self.store.get(job_id)["metadata"], "providerError": message}
             update(state="failed", message=message, metadata=metadata, lease=0)

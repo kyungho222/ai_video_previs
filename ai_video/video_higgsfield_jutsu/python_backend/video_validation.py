@@ -10,8 +10,9 @@ from .spatial_guides import image_data_url, read_json_response, sample_frames
 from .video_prompt import PREVIS_RULES, CONTINUITY_RULES, SPEECH_LANGUAGE_RULES
 from .video_errors import PromptLengthError
 from .scene_flow import FIRST_SCENE_CONTINUITY, SCENE_FLOW_RULES
+from .review_images import pack_review_images
 
-VALIDATION_VERSION = "video-validation-v7-bounded-review"
+VALIDATION_VERSION = "video-validation-v8-bounded-images"
 INPUT_REVIEW_LIMIT = 1
 CHECK_NAMES = ("cast", "identity", "anatomy", "motion", "staging", "camera")
 
@@ -64,6 +65,13 @@ OUTPUT_SCHEMA = {
 
 async def analyze(request, model, name, schema, instructions, context, images):
     def encode_images():
+        if len(images) > 4:
+            packed, references = pack_review_images(images, limit=4)
+            return [{"type": "input_text", "text": json.dumps({**context,
+                'reviewImageLayout': references,
+                'reviewImageInstructions': 'Each SAMPLE tile is a separate original image or timestamped frame. '
+                    'Use its source label and timestamp from reviewImageLayout. Do not interpret a contact sheet '
+                    'as one scene or count the same person across different tiles as different people.'}, ensure_ascii=False)}, *packed]
         content = [{"type": "input_text", "text": json.dumps(context, ensure_ascii=False)}]
         for label, path in images:
             content.append({"type": "input_text", "text": label})
@@ -170,6 +178,7 @@ async def validate_video_request(
         return cached["resolvedPrompt"], cached
     report = {
         "version": VALIDATION_VERSION,
+        "model": model,
         "fingerprint": fingerprint,
         "status": "unavailable",
         "attempts": [],
@@ -366,6 +375,7 @@ async def validate_video_result(
     report = {
         "version": VALIDATION_VERSION,
         "videoSha256": digest_value,
+        "model": model,
         "criticalMoments": critical_moments,
         "characterDirection": character_direction,
         "sceneFlowPolicy": scene_flow_policy,
@@ -402,6 +412,9 @@ async def validate_video_result(
         ]
         for label, frames in (("PREVIS", original), ("RESULT", final), ("DENSE RESULT", dense)):
             review_images += [(f'{label} {frame["time"]:.3f}s', frame["path"]) for frame in frames]
+        report['imageTransport'] = {'sourceImageCount': len(review_images),
+            'submittedImageCount': min(4, len(review_images)),
+            'method': 'labelled_contact_sheets' if len(review_images) > 4 else 'individual_images'}
         result = await analyze(
             request,
             model,

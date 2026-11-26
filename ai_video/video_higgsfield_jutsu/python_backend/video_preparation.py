@@ -19,7 +19,7 @@ from .video_errors import MAX_REFERENCE_BYTES, VideoError, PromptLengthError
 from .video_media import inspect_video
 from .reference_audio import upload_reference_audio
 from .bgm import VOICE_ONLY
-from .voice_diagnostics import build_voice_diagnostics, log_voice_event
+from .voice_diagnostics import build_voice_diagnostics
 from .scene_flow import FIRST_SCENE_CONTINUITY, SCENE_FLOW_RULES, continuous_guides
 from .creative_policy import KOREAN_ATMOSPHERE_RULE
 from .video_prompt import (
@@ -469,8 +469,8 @@ async def _prepare_submission(self, job, owner, reference, folder, update):
     try:
         voice_diagnostics = build_voice_diagnostics(job_id, {**options, "scenePrompt": scene_prompt}, direction, prepared["prompt"])
         metadata["voiceDiagnostics"] = voice_diagnostics
-    except Exception as error:
-        logging.getLogger("uvicorn.error").warning("[음성 진단] job=%s 진단 기록 실패 · %s", job_id, type(error).__name__)
+    except Exception:
+        pass
     metadata.update(
         submittedPrompt=prepared["prompt"],
         promptOptimization=prepared["optimization"],
@@ -553,8 +553,6 @@ async def _prepare_submission(self, job, owner, reference, folder, update):
     )
     if reference_audio:
         extra["reference_audio"] = reference_audio
-    if voice_diagnostics is not None:
-        log_voice_event(job_id, "모델 요청 직전", diagnostics=voice_diagnostics)
     task_id = await client.submit(
         reference_url,
         generation_prompt,
@@ -568,7 +566,6 @@ async def _prepare_submission(self, job, owner, reference, folder, update):
         final_prompt=prepared["prompt"],
         **extra,
     )
-    log_voice_event(job_id, "모델 요청 접수", model=options.get("model"), audioMode=options.get("audioMode"))
     update(provider_id=task_id, state="running", message="영상 생성 중입니다.")
     job = self.store.get(job_id)
     return job

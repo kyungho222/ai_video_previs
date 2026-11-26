@@ -2,6 +2,7 @@
 from copy import deepcopy
 import re
 from .resources.scene_props import CATALOG, scene_prop_parts
+from .prop_layout import default_prop_spec, prop_position, add_environment_backdrop
 
 # Camera terms usually describe the viewpoint, rather than a physical prop.
 EXCLUDED_ALIASES = {'camera', '카메라'}
@@ -88,9 +89,6 @@ def extract_prompt_hints(text):
 def merge_requested_props(text, design):
     result = deepcopy(design)
     subjects = result.get('subjects', [])
-    actor_positions = [s.get('position', [0, 0, 0]) for s in subjects if s.get('kind') in ('human', 'quadruped', 'bird')]
-    center_x = sum(p[0] for p in actor_positions) / len(actor_positions) if actor_positions else 0
-    rear_y = min((p[1] for p in actor_positions), default=0) - 3
     ids = {s.get('id') for s in subjects}
     represented = {key for key, (_, parts) in CATALOG.items()
                    if any(s.get('kind') == 'prop' and scene_prop_parts(s.get('label')) == parts for s in subjects)}
@@ -131,12 +129,22 @@ def merge_requested_props(text, design):
         while ident in ids:
             ident = 'requested_' + key + '_' + str(suffix)
             suffix += 1
-        x = center_x + (len(added) % 5 - 2) * 1.3
-        y = rear_y - (len(added) // 5) * 1.3
-        size = [3, .2, 1.5] if key == 'blackboard' else [.7, .7, .9]
+        position, yaw = prop_position(key, len(added), result)
+        size, color = default_prop_spec(key)
         subjects.append({'id': ident, 'label': label, 'kind': 'prop', 'shape': 'box',
-                         'color': [.4, .4, .4], 'size': size, 'position': [x, y, 0], 'yaw': 0})
+                         'color': color, 'size': size, 'position': position, 'yaw': yaw})
         ids.add(ident)
         represented.add(key)
         added.append({'type': key, 'label': label, 'id': ident})
-    return result, {'added': added, 'skipped': skipped}
+    environment = add_environment_backdrop(text, result)
+    geometry = []
+    for subject in subjects:
+        if subject.get('kind') != 'prop':
+            continue
+        parts = scene_prop_parts(subject.get('label'))
+        geometry.append({'id':subject['id'], 'label':subject.get('label'),
+                         'representation':'composite' if parts else 'primitive_fallback',
+                         'partCount':len(parts) if parts else 1, 'size':subject.get('size'),
+                         'position':subject.get('position')})
+    return result, {'added': added, 'skipped': skipped, 'environmentAdded':environment,
+                    'geometry':geometry}

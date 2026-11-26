@@ -1,6 +1,4 @@
 """Concise, non-blocking diagnostics for generated speech and audio."""
-import json
-import logging
 import re
 
 _AUDIO = re.compile(r'음성|목소리|대사|발화|발음|한국어|영어|음악|노래|노래방|효과음|말한|말하|외치|랩|목청|voice|speech|speak|spoken|dialogue|audio|vocal|sing|singing|music|lyrics|sound|korean', re.I)
@@ -34,12 +32,3 @@ def build_voice_diagnostics(job_id, options, direction, final_prompt):
         'submittedAudioInstructions': _audio_fragments(final_prompt),
         'fullSubmittedPromptLocation': 'metadata.submittedPrompt',
     }
-
-
-def log_voice_event(job_id, stage, **values):
-    try:
-        data = {'jobId': job_id, 'stage': stage, **values}
-        logging.getLogger('uvicorn.error').info('[음성 진단] %s', json.dumps(data, ensure_ascii=False, default=str))
-    except Exception:
-        # Diagnostics must never prevent generation or publishing.
-        pass

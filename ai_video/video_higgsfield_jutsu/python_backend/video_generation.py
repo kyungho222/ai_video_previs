@@ -513,6 +513,7 @@ class VideoManager:
             return await request_openai(
                 http, api_key, path, body, lambda *args: None, stage_label="영상 프롬프트·품질 검증",
                 usage_sink=VIDEO_USAGE_SINK.get(),
+                allow_fallback=False,
             )
 
     async def _prepare_submission(self, job, owner, reference, folder, update):

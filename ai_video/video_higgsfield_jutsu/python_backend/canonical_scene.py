@@ -67,6 +67,18 @@ def normalize_scene(value):
                             'reason':'default_initial_camera_reference'})
     def color(row, key, path):
         rgb = row.get(key)
+        if isinstance(rgb, list) and all(type(n) in (int, float) and math.isfinite(n) for n in rgb):
+            if len(rgb) == 1 and 0 <= rgb[0] <= 1:
+                row[key] = rgb * 3
+                changes.append({'path':path, 'before':rgb, 'after':row[key], 'reason':'grayscale_to_rgb'})
+                rgb = row[key]
+            elif len(rgb) == 4:
+                unit = all(0 <= n <= 1 for n in rgb) and rgb[3] == 1
+                byte = all(n == int(n) and 0 <= n <= 255 for n in rgb) and rgb[3] == 255
+                if unit or byte:
+                    row[key] = rgb[:3]
+                    changes.append({'path':path, 'before':rgb, 'after':row[key], 'reason':'opaque_rgba_to_rgb'})
+                    rgb = row[key]
         if (isinstance(rgb, list) and len(rgb) == 3
                 and all(type(n) in (int, float) and math.isfinite(n) and n == int(n) and 0 <= n <= 255 for n in rgb)
                 and any(n > 1 for n in rgb)):
@@ -183,6 +195,17 @@ def normalize_scene(value):
             if redundant:
                 changes.append({'path':f'beats[{index}].actions[{action_index}]', 'before':deepcopy(action),
                                 'after':None, 'reason':'redundant_idle_with_root_action'})
+            else:
+                kept.append(action)
+        beat['actions'] = kept
+    # Identical normalized channel commands do not represent a second action.
+    # Different targets, poses, timing or evidence remain distinct for validation.
+    for index, beat in enumerate(beats):
+        kept = []
+        for action_index, action in enumerate(beat.get('actions', [])):
+            if action in kept:
+                changes.append({'path':f'beats[{index}].actions[{action_index}]',
+                                'before':deepcopy(action), 'after':None, 'reason':'duplicate_action'})
             else:
                 kept.append(action)
         beat['actions'] = kept

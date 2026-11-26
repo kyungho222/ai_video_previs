@@ -858,7 +858,7 @@ class SpatialGuideBuilder:
         def apply_source_id_policy(value):
             # With no exported 3D metadata there is no source-ID namespace to map.
             # Entity identities, asset assignments and observed 2D boxes stay intact.
-            if known_source_ids or not isinstance(value, dict):
+            if not isinstance(value, dict):
                 return value, []
             value = deepcopy(value)
             changes = []
@@ -867,8 +867,14 @@ class SpatialGuideBuilder:
                 for entity in entities:
                     if not isinstance(entity, dict):
                         continue
+                    # Missing native linkage means unknown, not missing visual analysis.
+                    # Keep invalid supplied values for validation; never infer an ID.
+                    if 'sourceObjectIds' not in entity:
+                        entity['sourceObjectIds'] = []
+                        changes.append({'entityId': entity.get('id'), 'added': [],
+                                        'reason': 'missing_native_reference'})
                     source_ids = entity.get('sourceObjectIds')
-                    if isinstance(source_ids, list) and source_ids and all(isinstance(i, str) for i in source_ids):
+                    if not known_source_ids and isinstance(source_ids, list) and source_ids and all(isinstance(i, str) for i in source_ids):
                         changes.append({'entityId': entity.get('id'), 'removed': source_ids[:],
                                         'reason': 'no_native_object_metadata'})
                         entity['sourceObjectIds'] = []
