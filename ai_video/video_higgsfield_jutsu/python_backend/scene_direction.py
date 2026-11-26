@@ -5,6 +5,7 @@ import re
 from .contract_validation import contract_issues
 
 from .scene_contract import SCENE_SCHEMA, CAMERA, SceneValidationError, obj, array, validate_scene, action_channel
+from .resources.scene_props import is_display_prop
 
 
 _action = deepcopy(SCENE_SCHEMA['properties']['tracks']['items'])
@@ -40,7 +41,7 @@ DIRECTION_SCHEMA = obj({
 # Separate relative spatial relationships from subject geometry and animation.
 DIRECTION_SCHEMA['properties']['relations'] = {**array(obj({
     'subject': {'type': 'string'}, 'target': {'type': 'string'},
-    'kind': {'type': 'string', 'enum': ['left_of', 'right_of', 'behind', 'in_front_of', 'unsupported']},
+    'kind': {'type': 'string', 'enum': ['left_of', 'right_of', 'behind', 'in_front_of', 'supported_by', 'unsupported']},
     'scope': {'type': 'string', 'enum': ['initial', 'entire']},
     'evidence': {'type': 'string'},
 })), 'maxItems': 48}
@@ -253,6 +254,8 @@ def direction_candidate(value, duration, titles=(), *, spans=None, adjustments=N
             spans = [duration * w / total for w in weights]
     tracks, scenes = [], []
     cast = [s['id'] for s in subjects if isinstance(s, dict) and isinstance(s.get('id'), str) and s.get('kind') != 'prop']
+    object_ids = {s['id'] for s in subjects if isinstance(s, dict) and isinstance(s.get('id'), str)}
+    displays = {s['id'] for s in subjects if isinstance(s, dict) and s.get('kind') == 'prop' and is_display_prop(s.get('label'))}
     cursor = 0
     for index, (beat, span) in enumerate(zip(beats, spans)):
         source_index = index + len(source.get('_introductions', []))
@@ -262,10 +265,22 @@ def direction_candidate(value, duration, titles=(), *, spans=None, adjustments=N
         primary = [a for a in actions if a.get('role') in ('performer', 'speaker') or
                    (a.get('role') is None and a.get('action') != 'idle')]
         performers = [a['subject'] for a in primary if isinstance(a.get('subject'), str)]
-        # Interaction props (chairs, tables, etc.) are not automatically shot subjects.
-        # Keep another character in frame for an interaction between performers.
-        partners = [a['target'] for a in primary if isinstance(a.get('target'), str) and a['target'] in cast]
+        # Seats are supports, but the visible object being pointed at is part
+        # of the shot's meaning. Camera/world reference tokens are not objects.
+        partners = [a['target'] for a in primary if isinstance(a.get('target'), str)
+                    and a['target'] in object_ids and (a['target'] in cast or a.get('action') == 'point')]
         raw_camera = beat.get('camera') if isinstance(beat.get('camera'), dict) else {}
+        if raw_camera.get('framing') != 'close':
+            for relation in source.get('relations', []):
+                if (not isinstance(relation, dict) or relation.get('referenceFrame', 'screen') != 'screen'
+                        or relation.get('kind') not in ('left_of', 'right_of', 'behind', 'in_front_of')
+                        or (relation.get('scope') == 'initial' and index != 0)):
+                    continue
+                a, b = relation.get('subject'), relation.get('target')
+                if a in performers and b in displays:
+                    partners.append(b)
+                elif b in performers and a in displays:
+                    partners.append(a)
         focus = list(dict.fromkeys((cast if raw_camera.get('scope') == 'all' else []) + performers + partners))
         if not focus:
             # A stationary/wait beat still needs a camera; never invent a speaker.

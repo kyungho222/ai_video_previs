@@ -19,6 +19,7 @@ from .previs_reference import scene_brief_for_frame
 from .scene_flow import FIRST_SCENE_CONTINUITY, SCENE_FLOW_RULES
 from .prompt_filter import MODEL_INPUT_GUARD, attach_presentation_rules
 from .sheet_layout import detect_sheet_layout
+from .character_sheet_adapter import compare_sheet_layout
 from .analysis_sheet import create_analysis_sheets
 from .asset_mapping_inventory import build_asset_inventory, assess_asset_inventory, complement_mapping_from_native
 
@@ -1274,14 +1275,17 @@ class SpatialGuideBuilder:
                             + str(error) + '\nPrevious response: '
                             + json.dumps(analysis, ensure_ascii=False))
                 continue
+            record['layoutComparison'] = compare_sheet_layout(analysis, layout_hints)
+            for comparison in record['layoutComparison']:
+                if comparison['status'] == 'layout_hint_difference':
+                    logging.getLogger('uvicorn.error').info(
+                        '[캐릭터 시트] 구분선 영역과 인물 분석 차이 · 이미지 %s · 영역 %s개 · 인물 %s · %s',
+                        comparison['imageIndex'], comparison['detectedRegionCount'],
+                        comparison['identityCount'] if comparison['identityCount'] is not None else '단일 또는 미분리',
+                        '분석된 인물 영역 유지' if comparison['identityCount'] is not None else '원본 이미지 유지')
             if on_attempt:
                 on_attempt(record)
             empty_indices = {sheet['imageIndex'] for sheet in analysis['sheets'] if not sheet['members']}
-            hint_counts = {hint['imageIndex']: hint['count'] for hint in layout_hints}
-            conflicts = {sheet['imageIndex'] for sheet in analysis['sheets']
-                         if sheet['imageIndex'] in hint_counts
-                         and len(sheet['members']) != hint_counts[sheet['imageIndex']]}
-            empty_indices |= conflicts
             if empty_indices and attempt == 1:
                 first_analysis = deepcopy(analysis)
                 empty_indices_first = empty_indices
@@ -1294,13 +1298,6 @@ class SpatialGuideBuilder:
                     'Return the complete sheets list for all inputs.'
                 )
                 continue
-            if attempt == 2 and 'first_analysis' in locals():
-                conflicts &= empty_indices_first
-            if conflicts and attempt == 2:
-                raise GuideError('캐릭터 시트 영역과 인물 분석 결과가 일치하지 않습니다. '
-                                 '시트 구분선과 인물별 영역을 확인해 주세요. '
-                                 + json.dumps({'imageIndices': sorted(conflicts),
-                                               'layoutHints': layout_hints}, ensure_ascii=False))
             if attempt == 2 and 'first_analysis' in locals():
                 # Only reconsider sheets initially classified as single. Preserve
                 # confirmed multi-person panels from the first independent pass.

@@ -49,7 +49,9 @@ CATALOG = {
     'box': (('상자','박스','box','package'), [_box((0,0,.45),(1,1,.9)),_box((0,0,.93),(1.02,1.02,.1),.8)]),
     'bag': (('가방','bag','handbag'), [_box((0,0,.4),(.9,.4,.8)),_box((-.25,0,.88),(.08,.12,.25),.7),_box((.25,0,.88),(.08,.12,.25),.7),_box((0,0,.99),(.55,.12,.08),.7)]),
     'phone': (('휴대전화','휴대폰','스마트폰','핸드폰','phone','smartphone'), [_box((0,0,.5),(.65,.12,1)),_box((0,-.07,.53),(.53,.02,.75),.35)]),
-    'monitor': (('모니터','monitor','screen'), [_box((0,0,.65),(1,.12,.65)),_box((0,0,.25),(.1,.12,.3),.7),_box((0,0,.07),(.5,.4,.1),.7)]),
+    'monitor': (('모니터','monitor'), [_box((0,0,.65),(1,.12,.65)),_box((0,0,.25),(.1,.12,.3),.7),_box((0,0,.07),(.5,.4,.1),.7)]),
+    'display': (('스크린','화면판','전광판','그래프','screen','display panel','graph','chart'), [
+        _box((0,0,.5),(1,.12,1),.55), _box((0,.075,.5),(.93,.03,.90),1.1)]),
     'laptop': (('노트북','laptop'), [_box((0,0,.15),(1,.9,.12)),_box((0,-.4,.55),(1,.1,.8)),_box((0,-.34,.58),(.85,.02,.65),.35)]),
     'camera': (('카메라','camera'), [_box((0,0,.5),(1,.65,.6)),_cyl((0,-.4,.5),(.4,.4,.3),.45),_box((.25,0,.86),(.25,.3,.12),.75)]),
     'plate': (('접시','plate'), [_cyl((0,0,.1),(1,1,.18)),_cyl((0,0,.19),(.7,.7,.04),.85)]),
@@ -85,3 +87,8 @@ def scene_prop_parts(label):
             if match:
                 matches.append((match.end(), len(alias), parts))
     return max(matches, key=lambda item: (item[0], item[1]))[2] if matches else None
+
+
+def is_display_prop(label):
+    parts = scene_prop_parts(label)
+    return parts is not None and any(parts == CATALOG[key][1] for key in ('display', 'monitor', 'blackboard'))

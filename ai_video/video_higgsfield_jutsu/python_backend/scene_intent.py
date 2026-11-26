@@ -24,6 +24,25 @@ def _rows(value):
     return value if isinstance(value, list) else []
 
 
+def _camera_orbit_quote(request):
+    # Require camera context in the same sentence; circular actor motion is not
+    # evidence for a camera orbit. Preserve the model's path, not guessed angles.
+    for sentence in re.split(r'[.!?\n]', str(request or '')):
+        if (re.search(r'카메라|camera', sentence, re.I)
+                and re.search(r'원형|공전|주위를?\s*(?:돌|회전)|orbit|circular', sentence, re.I)
+                and not re.search(r'금지|하지\s*(?:않|말)|no\s+orbit|do\s+not', sentence, re.I)):
+            return sentence.strip()
+    return None
+
+
+def _faces_camera(text):
+    if re.search(r'(?:do\s+not|don.t|never)\s+(?:face|look)|(?:바라보|응시)지\s*(?:않|말)', str(text or ''), re.I):
+        return False
+    return bool(re.search(r'(?:카메라|렌즈)(?:를|을)?\s*(?:정면으로\s*)?(?:바라|응시|향해\s*(?:몸을\s*)?(?:돌|서))|'
+                          r'fac(?:e|es|ing)\s+(?:the\s+)?camera|look\w*\s+(?:at|toward)\s+(?:the\s+)?camera',
+                          str(text or ''), re.I))
+
+
 def prepare_authored_direction(value, request):
     result, changes = deepcopy(value), []
     if not isinstance(result, dict):
@@ -51,7 +70,11 @@ def prepare_authored_direction(value, request):
             camera.setdefault('transition', 'continuous')
             actions = [a for a in _rows(beat.get('actions')) if isinstance(a, dict)]
             evidence = camera.get('directionEvidence')
-            if not source_quote_match(evidence, request):
+            orbit_quote = _camera_orbit_quote(request) if camera.get('movement') == 'orbit' else None
+            if orbit_quote and not source_quote_match(evidence, request):
+                camera['directionEvidence'] = orbit_quote
+                changes.append({'beat': i, 'reason': 'source_camera_movement', 'source': 'user', 'sourceQuote': orbit_quote})
+            if not source_quote_match(camera.get('directionEvidence'), request):
                 primary = next((a.get('subject') for a in actions if a.get('role') in ('speaker', 'performer') and isinstance(a.get('subject'), str)), None)
                 yaw = headings.get(primary, 0)
                 front = -yaw if type(yaw) in (int, float) and math.isfinite(yaw) else 0
@@ -64,8 +87,17 @@ def prepare_authored_direction(value, request):
                     changes.append({'beat': i, 'subject': primary, 'reason': 'front_start_only_for_turn', 'source': 'default'})
                 if any(camera.get(k) != v for k, v in before.items()):
                     changes.append({'beat': i, 'reason': 'default_front_camera', 'source': 'default', 'before': before})
+        turns = [a for a in _rows(beat.get('actions')) if isinstance(a, dict)
+                 and a.get('action') == 'turn' and a.get('role') in ('performer', 'speaker')]
         for action in _rows(beat.get('actions')):
             if isinstance(action, dict) and isinstance(action.get('subject'), str):
+                # A fixed world yaw cannot express facing a moving camera.
+                # Only bind the named turn/performer, never every observer.
+                action.pop('faceCamera', None)
+                if (_faces_camera(request) and _faces_camera(beat.get('intent'))
+                        and action in turns and (len(turns) == 1 or action.get('target') == 'camera')):
+                    action['faceCamera'] = True
+                    changes.append({'beat': i, 'subject': action['subject'], 'reason': 'camera_relative_facing', 'source': 'user'})
                 headings[action['subject']] = action.get('yaw', headings.get(action['subject'], 0))
     # Source-linked constraints take precedence over generated defaults. Conflicting
     # explicit constraints remain visible in the later report rather than disappearing.

@@ -1,6 +1,7 @@
 """Deterministic post-design corrections; never calls a model."""
 from copy import deepcopy
-from .resources.scene_props import CATALOG, scene_prop_parts
+import re
+from .resources.scene_props import CATALOG, scene_prop_parts, is_display_prop
 
 
 def correct_scene(design):
@@ -9,13 +10,16 @@ def correct_scene(design):
     warnings = []
     subjects = {s['id']: s for s in result['subjects']}
     for subject in subjects.values():
-        if subject['kind'] != 'prop' or scene_prop_parts(subject.get('label')) != CATALOG['blackboard'][1]:
+        if subject['kind'] != 'prop' or not is_display_prop(subject.get('label')):
+            continue
+        if re.search(r'눕|수평|바닥|laid|horizontal|floor', str(subject.get('label', '')), re.I):
             continue
         before = subject['size'][:]
         if before[2] < before[1] * .25:
             subject['size'] = [before[0], before[2], before[1]]
             changes.append({'subject': subject['id'], 'field': 'size', 'before': before,
-                            'after': subject['size'][:], 'reason': 'upright_blackboard_axes'})
+                            'after': subject['size'][:], 'reason': 'upright_blackboard_axes'
+                            if scene_prop_parts(subject.get('label')) == CATALOG['blackboard'][1] else 'upright_display_axes'})
     for subject in subjects.values():
         if subject['kind'] != 'human':
             continue

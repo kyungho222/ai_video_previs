@@ -3,7 +3,7 @@ from copy import deepcopy
 import math
 import re
 from .resources.scene_props import CATALOG, scene_prop_parts
-from .scene_contract import ACTIONS, KINDS
+from .scene_contract import ACTIONS, KINDS, action_channel
 
 class CanonicalSceneError(ValueError):
     pass
@@ -147,6 +147,45 @@ def normalize_scene(value):
                 if normalized != name:
                     action['action'] = normalized
                     changes.append({'path':path+'.action','before':name,'after':normalized,'reason':'action_alias'})
+    for index, beat in enumerate(beats):
+        actions = beat.get('actions', [])
+        roots = {}
+        for action in actions:
+            if action_channel(action.get('action')) in ('movement', 'posture'):
+                roots.setdefault(action.get('subject'), []).append(action)
+        for action_index, action in enumerate(actions):
+            candidates = roots.get(action.get('subject'), [])
+            if action_channel(action.get('action')) not in ('gesture', 'vocal') or len(candidates) != 1:
+                continue
+            root = candidates[0]
+            if not isinstance(root.get('position'), list) or type(root.get('yaw')) not in (int, float):
+                continue
+            if action.get('position') != root['position'] or action.get('yaw') != root['yaw']:
+                before = {'position':deepcopy(action.get('position')), 'yaw':action.get('yaw')}
+                action['position'], action['yaw'] = root['position'][:], root['yaw']
+                changes.append({'path':f'beats[{index}].actions[{action_index}]',
+                                'before':before,'after':{'position':action['position'][:],'yaw':action['yaw']},
+                                'reason':'overlay_inherits_root_channel'})
+    for index, beat in enumerate(beats):
+        if beat.get('purpose') == 'wait' or beat.get('timingEvidence'):
+            continue
+        actions = beat.get('actions', [])
+        kept = []
+        for action_index, action in enumerate(actions):
+            redundant = (action.get('action') == 'idle' and action.get('role') != 'speaker'
+                and action.get('target') is None and any(
+                    other is not action and other.get('subject') == action.get('subject')
+                    and other.get('action') != 'idle'
+                    and action_channel(other.get('action')) in ('movement', 'posture')
+                    and other.get('position') == action.get('position')
+                    and other.get('yaw') == action.get('yaw')
+                    for other in actions))
+            if redundant:
+                changes.append({'path':f'beats[{index}].actions[{action_index}]', 'before':deepcopy(action),
+                                'after':None, 'reason':'redundant_idle_with_root_action'})
+            else:
+                kept.append(action)
+        beat['actions'] = kept
     # Resolve a missing sit target only when the beat explicitly mentions a seat
     # and the authored scene has exactly one compatible named seat.
     for index, beat in enumerate(beats):

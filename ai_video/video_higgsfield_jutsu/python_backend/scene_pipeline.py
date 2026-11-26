@@ -15,7 +15,10 @@ from .scene_compiler import compile_scene
 from .scene_correction import correct_scene
 from .object_union import merge_requested_props, extract_prompt_hints
 from .scene_relations import reconcile_relations, derive_movement_limits, prepare_initial_contacts, RelationError
+from .scene_state import normalize_support_relations, resolve_scene_state
 from .scene_contract import CAMERA_ELEVATION, legacy_plan, validate_scene
+from .common_scene_adapter import adapt_scene_response, prepare_scene_execution
+from .scene_adapter_completion import adapt_with_completion
 from .canonical_scene import normalize_scene
 from .scene_response_adapter import extract_scene_object
 from .scene_direction import DIRECTION_SCHEMA, compile_direction, direction_candidate, direction_wire_schema
@@ -41,6 +44,10 @@ When a baseline is provided, the latest request is a revision: interpret questio
 missing behavior as a request to correct it. Change the requested beats while
 preserving unrelated baseline details, and prioritize this revision over earlier text.
 Return relations separately from subjects for explicit or essential spatial relationships.
+Use kind=supported_by for standing/performing ON a floor, stage or platform.
+Being on a stage is a support relationship, not in_front_of. Root positions are feet/base
+anchors; human height belongs to size, never root altitude. Grounded actions inherit their
+support surface; only explicitly airborne actions may leave it.
 Supported kinds: left_of/right_of and behind/in_front_of. Set referenceFrame=screen by default:
 left/right refer to the viewer of the first reference shot; front/behind refer to camera depth.
 Use referenceFrame=world only for explicit world axes, or object for explicit target-object orientation.
@@ -154,19 +161,30 @@ async def plan_scene(request, job, history, emit, *, feedback=None):
         try:
             value = extract_scene_object(response)
             job['rawSceneDirection'] = value
-            value, normalization_changes = normalize_scene(value)
-            job['normalizedSceneDirection'] = value
-            job['normalizationChanges'] = normalization_changes
+            adapted = await adapt_with_completion(request, response, job, source=request_sources(current_request, history),
+                                           duration=job['duration'], titles=job.get('scenarioTitles') or ())
+            if job.get('sceneAdapterCompletion', {}).get('used'):
+                completion = job['sceneAdapterCompletion']
+                emit('log', f"[previs-adapter] 필수값 부분 보완 · {completion['status']} · 적용 {len(completion.get('applied', []))}개")
+            value = adapted['direction']
+            job['normalizedSceneDirection'] = adapted['normalized']
+            job['normalizationChanges'] = adapted['changes']
             job['canonicalSceneStatus'] = 'normalized'
-            value, provenance = prepare_authored_direction(value, request_sources(current_request, history))
-            job.setdefault('directionAdjustments', []).extend(provenance)
-            if isinstance(value, dict):
-                job['lastSceneDesignCandidate'] = value
+            job.setdefault('directionAdjustments', []).extend(adapted['adjustments'])
+            job['lastSceneDesignCandidate'] = value
             job['lastSceneDirectionCandidate'] = value
-            adjustments = job.setdefault('directionAdjustments', [])
-            design = compile_direction(value, job['duration'], job.get('scenarioTitles') or (), adjustments=adjustments)
+            design = adapted['execution']
             job['sceneDirection'] = value
+            job['sceneAdapter'] = {'version': adapted['version'], 'conventions': adapted['conventions'],
+                                   'normalizationChanges': adapted['changes'], 'status': 'authored_ready'}
+
         except (ValueError, TypeError, KeyError, AttributeError) as error:
+            trace = getattr(error, 'scene_adapter_trace', None)
+            if trace:
+                job['rawSceneDirection'] = trace['raw']
+                job['normalizedSceneDirection'] = trace['normalized']
+                job['normalizationChanges'] = trace['changes']
+                job['sceneAdapter'] = {'version':trace['version'], 'status':'failed'}
             issues = getattr(error, 'issues', None) or [{'path': 'scene', 'message': str(error)}]
             issue = str(error)
             job['canonicalSceneStatus'] = 'failed'
@@ -276,34 +294,24 @@ def execution_validation_issues(validation):
 async def run_scene(client, job, design, history, emit):
     scene_count = None if job.get('pipeline', {}).get('version') == 'direction-v2' else len(job.get('scenarioTitles') or []) or None
     design = validate_scene(design, job['duration'], scene_count)
-    design, object_union = merge_requested_props(job.get('scenePrompt') or job.get('request', ''), design)
-    job['objectUnion'] = object_union
-    if object_union['skipped']:
-        raise RelationError('필수 객체 수가 씬 한도를 초과해 요청을 충족할 수 없습니다: ' + json.dumps(object_union['skipped'], ensure_ascii=False))
-    if object_union['added'] or object_union['skipped']:
-        emit('log', f"[previs-objects] 사용자 요청 객체 추가 {len(object_union['added'])}건 · 한도 초과 {len(object_union['skipped'])}건 · 추가 AI 호출 없음")
-    if job.get('directionAdjustments'):
-        emit('log', f"[previs-direction] 연출 시간표 정규화 {len(job['directionAdjustments'])}건 · 추가 AI 호출 없음")
-    job['sceneDesignBeforeCorrection'] = design
-    design, report = correct_scene(design)
-    relations = (job.get('sceneDirection') or {}).get('relations') or []
-    design, relations, contact_report = prepare_initial_contacts(design, relations, job.get('scenePrompt') or job.get('request', ''))
-    report['initialContact'] = contact_report
-    if contact_report['changes']:
-        emit('log', f"[previs-relations] 초기 접촉 상태 정규화 {len(contact_report['changes'])}건")
     try:
-        limits = derive_movement_limits(job.get('scenePrompt') or job.get('request', ''), design)
-        design, relation_report = reconcile_relations(design, relations, limits=limits)
+        prepared = prepare_scene_execution(design,
+            relations=(job.get('sceneDirection') or {}).get('relations') or [],
+            request=job.get('scenePrompt') or job.get('request', ''))
     except RelationError as error:
-        job['relationQuality'] = {'status': 'failed', 'error': str(error), 'relations': relations}
+        job['relationQuality'] = {'status': 'failed', 'error': str(error)}
         emit('checkpoint', None)
         raise RuntimeError('객체 관계 품질 검증 실패: ' + str(error)) from error
-    job['relationQuality'] = relation_report
-    job['serverSceneCorrection'] = report
+    design = prepared['execution']
+    job['objectUnion'] = prepared['objects']
+    job['sceneDesignBeforeCorrection'] = prepared['beforeCorrection']
+    job['serverSceneCorrection'] = prepared['correction']
+    job['relationQuality'] = prepared['relationQuality']
+    job['sceneState'] = prepared['sceneState']
+    job.setdefault('sceneAdapter', {}).update(version=prepared['version'],
+        conventions=prepared['conventions'], unresolved=prepared['unresolved'], status='execution_ready')
     design = validate_scene(design, job['duration'], scene_count)
-    if relations:
-        emit('log', f"[previs-relations] 상대 관계 {len(relations)}건 확인 · 보정 {len(relation_report['corrections'])}건 · 추가 AI 호출 없음")
-    emit('log', f"[previs-correction] 서버 보정 {len(report['changes'])}건 · 경고 {len(report['warnings'])}건 · 추가 AI 호출 없음")
+    emit('log', '[previs-adapter] 공통 장면 변환 완료 · 미확정 ' + str(len(prepared['unresolved'])) + '건')
     emit('checkpoint', None)
     code = compile_scene(design, job['duration'], job['aspect'])
     # Parse/compile locally before any project mutation; model strings are literals only.
@@ -410,7 +418,7 @@ async def run(agent, job, history, emit):
                     stage_label = '프리비즈 요청·영상 일치 검증'
             body = apply_presentation_rules(path, body, job.get('promptFilter', {}).get('generationRules', ''))
             return await request_openai(http, agent.api_key, path, body, emit,
-                                        stage_label=stage_label, allow_fallback=True,
+                                        stage_label=stage_label, allow_fallback=body.get('text',{}).get('format',{}).get('name') != 'scene_adapter_completion',
                                         usage_sink=lambda row: emit('ai_usage', row),
                                         job_id=job['id'], session_id=job.get('sessionId'))
         job['promptFilter'] = await filter_user_prompts(

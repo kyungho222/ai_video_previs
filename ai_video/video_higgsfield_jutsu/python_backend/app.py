@@ -179,7 +179,7 @@ class Service:
                     if (
                         kind == "log"
                         and isinstance(value, str)
-                        and value.startswith(("[previs-timing]", "[previs-camera]"))
+                        and value.startswith(("[previs-timing]", "[previs-camera]", "[previs-adapter]"))
                     ):
                         logger.info("job=%s %s", job["id"], value)
                     safe_event(kind, value)
@@ -504,6 +504,9 @@ def create_api_router(*, root=DEFAULT_ROOT, python_client=None, agent=None, tran
                 "request",
                 "plan",
                 "sceneDesign",
+                "sceneState",
+                "sceneAdapter",
+                "sceneAdapterCompletion",
                 "sceneDirection",
                 "directionAdjustments",
                 "rawSceneDirection",

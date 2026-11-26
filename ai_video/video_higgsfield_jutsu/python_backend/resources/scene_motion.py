@@ -6,6 +6,16 @@ def _scene_mix(a, b, u):
     return [x + (y - x) * u for x, y in zip(a, b)]
 
 
+def face_camera_yaw(position, camera_position, yaw, weight=1.):
+    """+Y is actor front; use evaluated camera XY, preserving vertical pose."""
+    dx, dy = camera_position[0] - position[0], camera_position[1] - position[1]
+    if dx * dx + dy * dy < 1e-12:
+        return yaw
+    target = _scene_math.degrees(_scene_math.atan2(-dx, dy))
+    delta = (target - yaw + 180) % 360 - 180
+    return yaw + delta * max(0., min(1., weight))
+
+
 def camera_step(previous, desired, velocity, dt, max_speed, max_acceleration):
     """Continuous camera motion in world units, independent of Blender APIs."""
     def limit(vector, maximum):

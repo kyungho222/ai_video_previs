@@ -49,6 +49,7 @@ CAMERA['properties']['focus'].update(minItems=1, maxItems=24)
 # Optional for legacy tracks; new authored directions receive deterministic channels.
 SCENE_SCHEMA['properties']['tracks']['items']['properties']['channel'] = {'type': 'string', 'enum': ['movement', 'posture', 'gesture', 'vocal']}
 SCENE_SCHEMA['properties']['tracks']['items']['properties']['initialPosture'] = {'type': 'boolean'}
+SCENE_SCHEMA['properties']['tracks']['items']['properties']['faceCamera'] = {'type': 'boolean'}
 
 
 def action_channel(action):

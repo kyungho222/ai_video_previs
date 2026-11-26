@@ -154,18 +154,20 @@ def _scene_bounds(roots, scene, framing='full'):
     points = []
     for root in roots:
         meshes = [o for o in [root, *root.children_recursive] if o.type == 'MESH' and not o.hide_render]
-        selected = _scene_framing_meshes(meshes, framing)
-        head_based = framing == 'close' and selected is not meshes
+        # Context props need their whole display surface, not a human upper-body crop.
+        object_framing = 'full' if root.get('previs_kind') == 'prop' else framing
+        selected = _scene_framing_meshes(meshes, object_framing)
+        head_based = object_framing == 'close' and selected is not meshes
         current = [o.evaluated_get(depsgraph).matrix_world @ Vector(c) for o in selected for c in o.bound_box]
         if not current:
             raise ValueError('visible subject geometry is missing')
         lo = Vector(tuple(min(p[i] for p in current) for i in range(3)))
         hi = Vector(tuple(max(p[i] for p in current) for i in range(3)))
         # Close/medium target actual upper geometry, never the subject's ground-level origin.
-        if framing in ('medium', 'close') and not head_based:
-            fraction = .55 if framing == 'medium' else .24
+        if object_framing in ('medium', 'close') and not head_based:
+            fraction = .55 if object_framing == 'medium' else .24
             lo.z = hi.z - (hi.z - lo.z) * fraction
-            if framing == 'close':
+            if object_framing == 'close':
                 center_x = (lo.x + hi.x) / 2
                 half = max(.12, (hi.z - lo.z) * .7)
                 lo.x, hi.x = center_x - half, center_x + half
@@ -180,6 +182,35 @@ def _scene_floor_safe_position(position, floor_z, clearance=.1):
         position[2] = minimum
         return position, True
     return position, False
+
+
+def _scene_support_floor(focus_bases, surface_bounds, default=-.02, tolerance=.05):
+    """Measured support beneath feet, not the tallest object in the scene."""
+    height = default
+    for base in focus_bases:
+        for low, high in surface_bounds:
+            if (low[0] - .01 <= base[0] <= high[0] + .01
+                    and low[1] - .01 <= base[1] <= high[1] + .01
+                    and abs(base[2] - high[2]) <= tolerance):
+                height = max(height, high[2])
+    return height
+
+
+def _scene_focus_support_height(scene, rigs, plan, focus):
+    bases, surfaces = [], []
+    for subject in plan['subjects']:
+        if subject['kind'] == 'prop':
+            root = rigs[subject['id']]['root']
+            points = _scene_bounds([root], scene, 'full')
+            if points:
+                surfaces.append(([min(p[i] for p in points) for i in range(3)],
+                                 [max(p[i] for p in points) for i in range(3)]))
+    if not surfaces:
+        return -.02
+    for subject in plan['subjects']:
+        if subject['id'] in focus and subject['kind'] != 'prop':
+            bases.append(list(rigs[subject['id']]['root'].matrix_world.translation))
+    return _scene_support_floor(bases, surfaces)
 
 
 def _scene_camera_pose(camera, scene, points, setup, phase):
@@ -289,14 +320,16 @@ def _scene_build_camera(scene, rigs, plan):
         # Fit the actual new subject as well as the interpolated region. Fitting
         # only the latter can hide clipping during an otherwise smooth transition.
         fit_points = _scene_fit_points(actual_points, points)
+        support_floor = _scene_focus_support_height(scene, rigs, plan, setup['focus'])
         # Ensure all intended focus geometry is inside frame even through transitions.
         for _ in range(16):
             # ENV_floor has its top at z=-.02. Keep the camera above it even
             # when low elevation or the framing refit moves it below ground.
-            safe_position, floor_adjusted = _scene_floor_safe_position(position, -.02)
+            safe_position, floor_adjusted = _scene_floor_safe_position(position, support_floor)
             position = Vector(safe_position)
             if floor_adjusted and index not in floor_adjusted_shots:
-                motion_warnings.append({'frame': frame, 'reason': 'floor_clearance', 'shot': index})
+                motion_warnings.append({'frame': frame, 'reason': 'floor_clearance', 'shot': index,
+                                        'supportTop': support_floor, 'minimumCameraHeight': support_floor + .1})
                 floor_adjusted_shots.add(index)
             rotation = (target - position).to_track_quat('-Z', 'Y')
             camera.location = position
@@ -320,6 +353,7 @@ def _scene_build_camera(scene, rigs, plan):
             position = target + outward * distance
         else:
             motion_warnings.append({'frame': frame, 'shot': index, 'reason': 'framing_fit_incomplete'})
+            position = Vector(_scene_floor_safe_position(position, support_floor)[0])
             camera.location = position
             camera.rotation_euler = (target - position).to_track_quat('-Z', 'Y').to_euler('XYZ')
             bpy.context.view_layer.update()
@@ -344,7 +378,7 @@ def _scene_build_camera(scene, rigs, plan):
         previous_position, previous_target = position.copy(), target.copy()
         camera_samples.append({'frame': frame, 'shot': index, 'movement': setup['movement'],
                                'transitioning': blend < 1 or (setup.get('transition', 'continuous') != 'cut' and elapsed < .9), 'focus': setup['focus'], 'framing': setup['framing'],
-                               'position': list(position), 'target': list(target)})
+                               'position': list(position), 'target': list(target), 'supportTop': support_floor})
     actor_ids = {s['id'] for s in plan['subjects'] if s['kind'] != 'prop'}
     intervals = []
     for s in plan['scenes']:
@@ -395,6 +429,7 @@ def build_declarative_scene(plan, duration, aspect):
                     s['id'] + '_part_' + str(index), shape, position, size, color, root)
             rig = {'root': root, 'parts': parts}
         rig['root']['previs_entity_id'] = s['id']
+        rig['root']['previs_kind'] = s['kind']
         rig['root']['previs_label'] = s['label']
         rig['root'].scale = s['size']
         rig['root'].location = s['position']
@@ -447,6 +482,44 @@ def build_declarative_scene(plan, duration, aspect):
     scene.frame_set(scene.frame_end)
     motion_end = world_positions()
     samples = _scene_build_camera(scene, rigs, plan)
+    facing_diagnostics = []
+    facing_tracks = [t for t in plan['tracks'] if t.get('faceCamera') and t.get('action') == 'turn']
+    if facing_tracks:
+        from mathutils import Vector
+        from bpy_extras.object_utils import world_to_camera_view
+        updated_projection = []
+        for frame in range(scene.frame_start, scene.frame_end + 1):
+            scene.frame_set(frame)
+            bpy.context.view_layer.update()
+            time = (frame - 1) / 24
+            for track in facing_tracks:
+                if not track['start'] <= time < track['end']:
+                    continue
+                root = rigs[track['subject']]['root']
+                before = _scene_math.degrees(root.rotation_euler.z)
+                u = min(1., (time - track['start']) / max(1 / 24, track['end'] - track['start'] - 1 / 24))
+                weight = u * u * (3 - 2 * u)
+                after = face_camera_yaw(root.matrix_world.translation, scene.camera.matrix_world.translation, before, weight)
+                root.rotation_euler.z = _scene_math.radians(after)
+                root.keyframe_insert(data_path='rotation_euler', frame=frame)
+                desired = face_camera_yaw(root.matrix_world.translation, scene.camera.matrix_world.translation, after)
+                facing_diagnostics.append({'frame': frame, 'subject': track['subject'], 'beforeYaw': before,
+                    'afterYaw': after, 'remainingAngle': abs((desired - after + 180) % 360 - 180), 'weight': weight})
+            bpy.context.view_layer.update()
+            # Facing changes evaluated geometry: do not reuse pre-correction
+            # projection evidence as if it measured the final actor orientation.
+            shot = samples[frame - scene.frame_start]
+            points = _scene_bounds([rigs[key]['root'] for key in shot['focus']], scene, shot['framing'])
+            views = [world_to_camera_view(scene, scene.camera, p) for p in points]
+            values = [(p.x, p.y, p.z) for p in views]
+            issues = _scene_projection_issues(values, shot['framing'])
+            if issues:
+                updated_projection.append({'frame': frame, 'issues': issues, 'focus': shot['focus'],
+                    'framing': shot['framing'], 'measurements': _scene_projection_measurements(values, shot['framing']),
+                    'cameraPosition': shot['position'], 'cameraTarget': shot['target'], 'stage': 'after_facing'})
+        scene.camera['previs_projection_warnings'] = json.dumps(updated_projection)
+        for ident in {t['subject'] for t in facing_tracks}:
+            _pv_linear([rigs[ident]['root']])
     # Camera is keyed after character roots. Apply camera-targeted gestures in
     # a second pass against the evaluated camera at each frame.
     camera_targets = {t['subject'] for t in plan['tracks'] if t.get('target') == 'camera' and t.get('action') in ('point', 'reach')}
@@ -457,6 +530,7 @@ def build_declarative_scene(plan, duration, aspect):
             for ident in camera_targets:
                 sample = sample_track(plan, ident, (frame - 1) / 24)
                 if action_target(sample) == 'camera' and (sample.get('gesture_action') or sample.get('action')) in ('point', 'reach'):
+                    sample['yaw'] = _scene_math.degrees(rigs[ident]['root'].rotation_euler.z)
                     _scene_apply_human(rigs[ident], sample, frame, scene.camera.matrix_world.translation.copy())
         for ident in camera_targets:
             _pv_linear([rigs[ident]['root'], *rigs[ident]['parts'].values()])
@@ -477,6 +551,7 @@ def build_declarative_scene(plan, duration, aspect):
         'visibility': visibility, 'camera': {'passed': quality['status'] == 'matched', 'issues': quality['issues']},
         'framingChecked': True, 'frames': len(samples)},
         'serverCorrection': {'objectPositions': object_positions, 'cameraQuality': quality, 'cameraMotionWarnings': json.loads(scene.camera['previs_motion_warnings']),
+                             'facingDiagnostics': facing_diagnostics,
                              'pointingDiagnostics': {key:rig.get('pointingDiagnostics', []) for key,rig in rigs.items() if rig.get('pointingDiagnostics')},
                              'cameraSamples': samples,
                              'projectionWarnings': json.loads(scene.camera.get('previs_projection_warnings', '[]'))},

@@ -143,7 +143,9 @@ class MediaArchive:
         data = {"version": 1, "remoteProjects": projects, "mediaProjects": media_projects,
                 "sessionId": job.get("sessionId"),
                 "request": job.get("request", ""),
-                "plan": job.get("plan", {}), "sceneDesign": job.get("sceneDesign"),
+                "plan": job.get("plan", {}), "sceneDesign": job.get("sceneDesign"), "sceneState": job.get("sceneState"),
+                "sceneAdapter": job.get("sceneAdapter"),
+                "sceneAdapterCompletion": job.get("sceneAdapterCompletion"),
                 "scenePrompt": job.get("scenePrompt", ""),
                 "spatialManifestRef": job.get("spatialManifestRef")}
         if job.get("scenarioTitles"):
