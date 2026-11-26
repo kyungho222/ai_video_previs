@@ -1,12 +1,15 @@
 """Shared, non-mutating validation for the JSON contract subset used by this service."""
 import math
+from copy import deepcopy
 
 
 def contract_issues(value, schema, path='', *, allow_extra=False):
     issues = []
     def visit(v, spec, where):
         def fail(message):
-            issues.append({'path':where, 'message':message})
+            issues.append({'path':where, 'message':message, 'value':deepcopy(v),
+                           'expected':deepcopy(spec),
+                           **({'allowedValues':deepcopy(spec['enum'])} if 'enum' in spec else {})})
         expected = spec.get('type')
         types = expected if isinstance(expected,list) else [expected] if expected else []
         finite = type(v) in (int,float) and math.isfinite(v)
@@ -22,13 +25,15 @@ def contract_issues(value, schema, path='', *, allow_extra=False):
             properties=spec.get('properties',{})
             for key in spec.get('required',[]):
                 if key not in v:
-                    issues.append({'path':where+'.'+key if where else key, 'message':'required field missing'})
+                    issues.append({'path':where+'.'+key if where else key, 'message':'required field missing',
+                                   'value':None, 'missing':True, 'expected':deepcopy(properties.get(key,{}))})
             for key,child in properties.items():
                 if key in v:
                     visit(v[key],child,where+'.'+key if where else key)
             if not allow_extra and spec.get('additionalProperties') is False:
                 for key in sorted(v.keys()-properties.keys(),key=str):
-                    issues.append({'path':where+'.'+str(key) if where else str(key),'message':'unsupported field'})
+                    issues.append({'path':where+'.'+str(key) if where else str(key),'message':'unsupported field',
+                                   'value':deepcopy(v[key]), 'allowedFields':list(properties)})
         elif isinstance(v,list):
             if not spec.get('minItems',0) <= len(v) <= spec.get('maxItems',math.inf):
                 fail('array length outside allowed bounds')

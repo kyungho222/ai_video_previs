@@ -1,5 +1,6 @@
 """Deterministic post-design corrections; never calls a model."""
 from copy import deepcopy
+import colorsys
 import re
 from .resources.scene_props import CATALOG, scene_prop_parts, is_display_prop
 
@@ -9,6 +10,18 @@ def correct_scene(design):
     changes = []
     warnings = []
     subjects = {s['id']: s for s in result['subjects']}
+    # Preview identity colors only: independent of AI colors and input ordering.
+    # All body parts consume the subject color when the runtime builds the rig.
+    people = sorted((s for s in subjects.values() if s['kind'] == 'human'), key=lambda s: s['id'])
+    color_changes = []
+    for index, subject in enumerate(people):
+        color = [round(c, 4) for c in colorsys.hsv_to_rgb(
+            (.03 + index * .618033988749895) % 1, .70, .85)]
+        before = deepcopy(subject.get('color'))
+        subject['color'] = color
+        if before != color:
+            color_changes.append({'subject': subject['id'], 'field': 'color', 'before': before,
+                            'after': color[:], 'reason': 'distinct_previs_actor_color'})
     for subject in subjects.values():
         if subject['kind'] != 'prop' or scene_prop_parts(subject.get('label')) != CATALOG['stage'][1]:
             continue
@@ -77,4 +90,4 @@ def correct_scene(design):
                     changes.append({'subject': actor['id'], 'field': 'track.position',
                                     'start': track['start'], 'before': before,
                                     'after': track['position'][:], 'reason': 'seat_support_alignment'})
-    return result, {'version': 1, 'changes': changes, 'warnings': warnings, 'aiCalls': 0}
+    return result, {'version': 1, 'changes': changes + color_changes, 'warnings': warnings, 'aiCalls': 0}

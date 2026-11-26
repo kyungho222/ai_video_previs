@@ -63,7 +63,8 @@ async def request_missing_fields(request, job, items, audit):
         record.update(status='completed' if patches else 'unconfirmed',applied=list(patches))
         return patches
     except (ValueError,TypeError,KeyError,AttributeError,RuntimeError,httpx.HTTPError) as error:
-        record.update(status='failed',errorType=type(error).__name__)
+        record.update(status='failed',errorType=type(error).__name__,error=str(error),
+                      issues=deepcopy(getattr(error,'issues',[])))
         return {}
 
 
@@ -123,6 +124,8 @@ async def adapt_with_completion(request, response, job, *, source, duration, tit
         patches=await request_missing_fields(request,job,items,{})
         if not patches:
             raise
+        job.setdefault('designValidation', []).append({'stage':'partial_completion',
+            'error':str(error), 'issues':deepcopy(getattr(error,'issues',[])), 'recovered':True})
         patched=apply_field_patches(raw,patches)
         adapted=adapt_scene_response({'structuredContent':patched},request=source,duration=duration,titles=titles)
         adapted['raw']=trace['raw']

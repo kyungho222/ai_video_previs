@@ -1,7 +1,8 @@
 """Alibaba Wan video adapter: credentials, uploads, provider payloads and polling."""
 
 import re
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
+import logging
 import httpx
 from .video_errors import (
     AUDIO_MEDIA_TYPES, MAX_AUDIO_BYTES, MAX_AUDIO_CLIPS, MAX_IMAGE_BYTES,
@@ -18,6 +19,19 @@ REGIONS = {
     "singapore": "https://dashscope-intl.aliyuncs.com",
     "beijing": "https://dashscope.aliyuncs.com",
 }
+
+
+def provider_result_url(url):
+    """Use TLS for provider OSS links, preserving the signed path/query bytes."""
+    try:
+        parsed=urlparse(url)
+        if (parsed.scheme=='http' and parsed.port is None and not parsed.username and not parsed.password
+                and re.fullmatch(r'[a-z0-9][a-z0-9-]*\.oss-[a-z0-9-]+\.aliyuncs\.com',parsed.hostname or '')):
+            logging.getLogger('uvicorn.error').info('[video-download] 제공사 결과 주소 HTTPS 정규화 · host=%s',parsed.hostname)
+            return 'https'+url[len(parsed.scheme):]
+    except (ValueError,TypeError,AttributeError):
+        pass
+    return url
 
 
 def wan_guide_media(mode, input_format, assets, guides, motion_url):
@@ -293,7 +307,7 @@ class WanClient:
 
     async def download(self, url, target, *, headers=None, max_bytes=MAX_REFERENCE_BYTES):
         return await download_video(
-            url, target, headers=headers, max_bytes=max_bytes, transport=self.transport
+            provider_result_url(url), target, headers=headers, max_bytes=max_bytes, transport=self.transport
         )
 
 

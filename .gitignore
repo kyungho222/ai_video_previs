@@ -20,3 +20,5 @@
 /ai_video/video_generate/
 /ai_video/temp_assets/
 /restart-local.ps1
+/job-transfer-*/
+/job-transfer-*.zip

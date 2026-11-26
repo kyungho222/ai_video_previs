@@ -12,7 +12,7 @@ from .scene_flow import SCENE_FLOW_RULES
 from .video_errors import PromptLengthError
 from .video_policy import (PREVIS_RULES, CAMERA_GUIDE_RULES, INDEPENDENT_REACTION_RULES, ASSET_REBUILD_RULES, CONTINUITY_RULES, MOTION_RULES, SPEECH_LANGUAGE_RULES)
 
-PROMPT_POLICY_VERSION = "previs-compact-python-v1"
+PROMPT_POLICY_VERSION = "previs-compact-python-v2"
 
 
 
@@ -437,7 +437,8 @@ async def fit_video_prompt(prompt, *, request, model, max_length, required_texts
                     "Keep camera movement/direction, viewing target, framing, speed, each segment's timestamps, "
                     "root staging/path and contact events, transitions and final composition. Keep every cast ID "
                     "bound to the same asset appearance, actor, interaction target, voice profile, dialogue speaker "
-                    "and quoted words. Preserve solo turns, requested unison and synchronization. "
+                    "and quoted words. Preserve solo turns, requested unison, overlapping dialogue time ranges "
+                    "and simultaneous distinct voices without serializing them. Keep natural speech pace; do not stretch words to fill shots. "
                     "Preserve lyrical meaning, explicit user language overrides, assigned vocal languages and any instrumental-only or silent directions. "
                     "Copy requiredTexts exactly. Do not invent events or omit dialogue. "
                     "Keep physical continuity and reference image roles. Fixed server rules will be appended "

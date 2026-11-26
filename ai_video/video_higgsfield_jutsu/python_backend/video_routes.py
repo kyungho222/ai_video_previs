@@ -46,7 +46,7 @@ def create_video_router(service):
         return preferred if preferred in capabilities.regions else capabilities.regions[0]
 
     @router.post("/api/video/assets", status_code=201)
-    async def upload_asset(file: UploadFile = File(...), role: str = Form("other"),
+    async def upload_asset(file: UploadFile = File(...), role: str = Form("object"),
                            sourceObjectId: str | None = Form(None), label: str | None = Form(None),
                            appearance: str | None = Form(None)):
         try:
@@ -281,8 +281,14 @@ def create_video_router(service):
             raise HTTPException(
                 404, detail="선택한 에셋이 없습니다. 파일을 다시 선택하세요."
             ) from None
-        assets = [asset for asset in resolved_assets if asset["role"] != "audio"]
-        audio_assets = [asset for asset in resolved_assets if asset["role"] == "audio"]
+        from .asset_roles import partition_assets
+        asset_groups=partition_assets(resolved_assets)
+        # Preserve visual image numbering; audio belongs only to the audio path.
+        assets = [asset for asset in resolved_assets if asset['role'] != 'audio']
+        from .asset_diagnostics import asset_rows, log_asset_event
+        log_asset_event('request_assets',requestId=request_id,originalAssetCount=len(assets),
+                        registeredAssetCount=len(resolved_assets),assets=asset_rows(assets))
+        audio_assets = asset_groups['audio']
         audio_mode = "bgm" if audio_assets else "generated"
         if previous_job and "audioMode" not in previous_job["options"]:
             audio_mode = None
@@ -477,6 +483,7 @@ def create_video_router(service):
             raise HTTPException(400, detail=str(error)) from None
         if assets:
             options["assets"] = assets
+        options['assetGroups']={role:[asset['id'] for asset in items] for role,items in asset_groups.items()}
         if audio_assets:
             options["audioAssets"] = audio_assets
         if audio_mode:

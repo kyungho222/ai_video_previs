@@ -1,10 +1,48 @@
+// Per-tab recovery and independent polling state; execution limits belong to the server.
+export function createPrevisTasks(storage, key) {
+  const jobs = new Map();
+  const watching = new Map();
+  try {
+    for (const job of JSON.parse(storage.getItem(key) || '[]')) {
+      if (typeof job?.jobId === 'string') jobs.set(job.jobId, job);
+    }
+  } catch {}
+  function persist() {
+    try { storage.setItem(key, JSON.stringify([...jobs.values()])); } catch {}
+  }
+  return {
+    watching,
+    saved: () => [...jobs.values()],
+    remember(job) { jobs.set(job.jobId, job); persist(); },
+    begin(id) {
+      if (watching.has(id)) return null;
+      const state = {cursor: -1};
+      watching.set(id, state);
+      return state;
+    },
+    stop(id) { watching.delete(id); },
+    complete(id) { watching.delete(id); jobs.delete(id); persist(); }
+  };
+}
+
 export function initPrevis({request, apiUrl, renderVideoValidation, getWorkSettings}) {
   const $ = id => document.getElementById(id);
-  const activePrevisKey = 'previs.activeJob:' + location.pathname;
+  const previsTasks = createPrevisTasks(sessionStorage, 'previs.activeJobs.v2:' + location.pathname);
+  const jobChoices = new Map();
+  const jobPicker = document.createElement('select');
+  jobPicker.id = 'console-job-picker';
+  jobPicker.setAttribute('aria-label', '진행 중 또는 이전 작업 선택');
+  jobPicker.style.maxWidth = '30rem';
+  jobPicker.append(new Option('작업 목록 확인 중…', ''));
+  const openJobButton = document.createElement('button');
+  openJobButton.type = 'button';
+  openJobButton.textContent = '선택 작업 불러오기';
+  $('load-previs')?.after(jobPicker, openJobButton);
   let pendingScenarioTitles;
   let scenarioPrompt = '';
   let scenarioSessionId = null;
-  let queuedScenario = null;
+  let revisionSourceJobId = null;
+  let editorVersion = 0;
   let sourceLoadEpoch = 0;
   let sourcesLoading = false;
   let sessionId = null,
@@ -50,24 +88,19 @@ export function initPrevis({request, apiUrl, renderVideoValidation, getWorkSetti
   }
 
   function activeCount() {
-    return Number(chatBusy) + Number(shortformBusy) + wanSubmitting.size + new Set([...wanWatching, ...wanActiveSources.keys()]).size;
+    return Number(chatSubmitting) + previsTasks.watching.size + Number(shortformBusy) + wanSubmitting.size + new Set([...wanWatching, ...wanActiveSources.keys()]).size;
   }
 
   function updateBusy() {
     busy = activeCount() > 0;
     $('send').disabled = chatBusy;
-    $('reset').disabled = busy;
+    $('reset').disabled = chatSubmitting || shortformBusy || wanSubmitting.size > 0;
     $('refresh').disabled = chatSubmitting || shortformBusy || wanSubmitting.size > 0;
     if ($('load-previs')) $('load-previs').disabled = sourcesLoading;
-    if ($('queue-status')) $('queue-status').textContent = '이 화면의 진행·대기 작업 ' + activeCount() + '개 · 동시 실행 최대 ' + maxConcurrentJobs + '개 · 초과 요청은 순서대로 대기';
+    if ($('queue-status')) $('queue-status').textContent = '이 화면에서 추적 중인 작업 ' + activeCount() + '개 · 서버 동시 실행 최대 ' + maxConcurrentJobs + '개 · 초과 요청은 순서대로 대기';
     for (const [panel, update] of wanPanels) {
       if (panel.isConnected) update();
       else wanPanels.delete(panel);
-    }
-    if (!busy && !activePrevis?.jobId && queuedScenario) {
-      const scenario = queuedScenario;
-      queuedScenario = null;
-      applyScenario(scenario);
     }
   }
 
@@ -77,17 +110,17 @@ export function initPrevis({request, apiUrl, renderVideoValidation, getWorkSetti
   }
 
   function resetConsole() {
-    if (busy) return;
+    if (chatSubmitting || shortformBusy || wanSubmitting.size) return;
+    editorVersion++;
     sourceLoadEpoch++;
     sourcesLoading = false;
     if ($('load-previs')) $('load-previs').disabled = false;
-    queuedScenario = null;
-    if (activePrevis?.jobId) clearActivePrevis(activePrevis.jobId);
-    lastPrevisEvent = -1;
+    activePrevis = null;
     sessionId = null;
     pendingScenarioTitles = undefined;
     scenarioPrompt = '';
     scenarioSessionId = null;
+    revisionSourceJobId = null;
     hideRecovered = true;
     sourceCards.clear();
     for (const [id, card] of wanCards) {
@@ -282,25 +315,15 @@ export function initPrevis({request, apiUrl, renderVideoValidation, getWorkSetti
     setTimeout(() => void refreshAuthDisplay(), lastAuthState === 'connected' ? 1800000 : 5000);
   }
   let activePrevis;
-  let lastPrevisEvent = -1;
-  try {
-    activePrevis = JSON.parse(localStorage.getItem(activePrevisKey));
-  } catch {}
 
   function saveActivePrevis(job) {
     activePrevis = job;
-    lastPrevisEvent = -1;
-    try {
-      localStorage.setItem(activePrevisKey, JSON.stringify(job));
-    } catch {}
+    previsTasks.remember(job);
   }
 
   function clearActivePrevis(jobId) {
-    activePrevis = null;
-    try {
-      const saved = JSON.parse(localStorage.getItem(activePrevisKey));
-      if (saved?.jobId === jobId) localStorage.removeItem(activePrevisKey);
-    } catch {}
+    if (activePrevis?.jobId === jobId) activePrevis = null;
+    previsTasks.complete(jobId);
   }
 
   function pendingPrevis(label) {
@@ -311,12 +334,12 @@ export function initPrevis({request, apiUrl, renderVideoValidation, getWorkSetti
     return pending;
   }
 
-  async function followPrevis(job) {
-    sessionId = job.sessionId;
+  async function followPrevis(job, tracker) {
+    if (activePrevis?.jobId === job.jobId) sessionId = job.sessionId;
     if (job.version) log('v' + job.version + (job.baseVersion ? ' · v' + job.baseVersion + ' 기준 수정' : ' · 새 장면 생성'));
-    if ([5, 10, 15].includes(job.duration)) $('duration').value = String(job.duration);
+    if (activePrevis?.jobId === job.jobId && [5, 10, 15].includes(job.duration)) $('duration').value = String(job.duration);
     for (;;) {
-      const data = await request('/api/jobs/' + job.jobId + '?after=' + lastPrevisEvent + '&completeOnly=true');
+      const data = await request('/api/jobs/' + encodeURIComponent(job.jobId) + '?after=' + tracker.cursor + '&completeOnly=true');
       if (data === null) {
         await new Promise(resolve => setTimeout(resolve, 1000));
         continue;
@@ -328,10 +351,13 @@ export function initPrevis({request, apiUrl, renderVideoValidation, getWorkSetti
           log(entry.value, true);
           message(entry.value, 'error');
         }
-        if (entry.type === 'complete') renderOutput(entry.value);
-        lastPrevisEvent = entry.sequence;
+        if (entry.type === 'complete') {
+          if (activePrevis?.jobId === job.jobId) revisionSourceJobId = job.jobId;
+          renderOutput(entry.value);
+        }
+        tracker.cursor = entry.sequence;
       }
-      if (data.state !== 'running') {
+      if (!['running', 'queued'].includes(data.state)) {
         recordDebug('response', data);
         clearActivePrevis(job.jobId);
         return;
@@ -341,37 +367,39 @@ export function initPrevis({request, apiUrl, renderVideoValidation, getWorkSetti
   }
 
   async function showPrevis(job, pending) {
+    const tracker = previsTasks.begin(job.jobId);
+    if (!tracker) { pending.remove(); return; }
+    tracker.pending = pending;
+    updateBusy();
     try {
-      await followPrevis(job);
+      await followPrevis(job, tracker);
     } catch (error) {
       if (error.status === 404) {
+        if (activePrevis?.jobId === job.jobId) sessionId = null;
         clearActivePrevis(job.jobId);
-        sessionId = null;
       }
       message(error.message, 'error');
       log(error.message, true);
     } finally {
       pending.remove();
-      setBusy(false);
+      previsTasks.stop(job.jobId);
+      updateBusy();
       void status();
     }
   }
 
   function restorePrevis() {
-    if (chatBusy || !activePrevis?.jobId) return;
-    setBusy(true);
-    void showPrevis(activePrevis, pendingPrevis('프리비즈 작업을 이어서 불러오고 있습니다.'));
+    for (const job of previsTasks.saved()) {
+      if (!activePrevis && !scenarioPrompt) activePrevis = job;
+      void showPrevis(job, pendingPrevis('프리비즈 ' + job.jobId.slice(0,8) + ' · 작업을 불러오고 있습니다.'));
+    }
   }
 
   $('form').onsubmit = async event => {
     event.preventDefault();
     if (chatBusy) return;
-    if (activePrevis?.jobId) {
-      restorePrevis();
-      return;
-    }
     const requirements = $('input').value.trim();
-    const text = [scenarioPrompt, requirements && '추가 요청사항:\n' + requirements]
+    const text = revisionSourceJobId ? requirements : [scenarioPrompt, requirements && '추가 요청사항:\n' + requirements]
       .filter(Boolean).join('\n\n');
     if (!text) return;
     if (text.length > 8000) {
@@ -383,7 +411,23 @@ export function initPrevis({request, apiUrl, renderVideoValidation, getWorkSetti
       message('채팅 모델 목록을 확인할 수 없습니다. 페이지를 새로고침하세요.', 'error');
       return;
     }
+    const alongsideRunningPrevis = activePrevis?.jobId && previsTasks.watching.has(activePrevis.jobId);
+    const submissionSessionId = alongsideRunningPrevis && !revisionSourceJobId ? null : sessionId;
+    const payload = scenarioSessionId ? {
+      model: settings.model, usageLogEnabled: settings.usageLogEnabled === true,
+      sessionId: scenarioSessionId,
+      ...(revisionSourceJobId ? {sourceJobId:revisionSourceJobId} : {}),
+      message:requirements, duration:$('duration').value, aspect:$('aspect').value
+    } : {
+      message:text, sessionId:submissionSessionId,
+      ...(revisionSourceJobId ? {sourceJobId:revisionSourceJobId} : {}),
+      ...settings, duration:$('duration').value, aspect:$('aspect').value,
+      scenarioTitles:pendingScenarioTitles
+    };
+    const submittedScenarioSessionId = scenarioSessionId;
     chatSubmitting = true;
+    editorVersion++;
+    activePrevis = null;
     setBusy(true);
     const connection = await status();
     if (connection?.state !== 'connected') {
@@ -395,7 +439,6 @@ export function initPrevis({request, apiUrl, renderVideoValidation, getWorkSetti
       setBusy(false);
       return;
     }
-    const scenarioTitles = pendingScenarioTitles;
     message(requirements || '저장된 시나리오로 프리비즈를 생성합니다.', 'user');
     const pending = pendingPrevis('요청하신 프리비즈를 구성하고 있습니다.');
     let job;
@@ -404,23 +447,9 @@ export function initPrevis({request, apiUrl, renderVideoValidation, getWorkSetti
         method: 'POST',
         headers: {
           'content-type': 'application/json',
-          ...(scenarioSessionId ? {sessionId: scenarioSessionId} : {})
+          ...(submittedScenarioSessionId ? {sessionId: submittedScenarioSessionId} : {})
         },
-        body: JSON.stringify(scenarioSessionId ? {
-          model: settings.model,
-          usageLogEnabled: getWorkSettings().usageLogEnabled === true,
-          sessionId: scenarioSessionId,
-          message: requirements,
-          duration: $('duration').value,
-          aspect: $('aspect').value
-        } : {
-          message: text,
-          sessionId,
-          ...settings,
-          duration: $('duration').value,
-          aspect: $('aspect').value,
-          scenarioTitles
-        })
+        body: JSON.stringify(payload)
       });
     } catch (error) {
       message(error.message, 'error');
@@ -430,6 +459,9 @@ export function initPrevis({request, apiUrl, renderVideoValidation, getWorkSetti
       if (job) {
         $('input').value = '';
         saveActivePrevis(job);
+        pending.append(document.createTextNode(' · 작업 ' + job.jobId.slice(0,8)));
+        void refreshJobPicker();
+        setBusy(false);
         updateBusy();
       } else {
         pending.remove();
@@ -449,6 +481,7 @@ export function initPrevis({request, apiUrl, renderVideoValidation, getWorkSetti
   restorePrevis();
   void loadSources(false);
   void restoreWanJobs(false);
+  void refreshJobPicker();
 
   function mediaSource(media) {
     if (media.videoSource) return media.videoSource;
@@ -476,6 +509,13 @@ export function initPrevis({request, apiUrl, renderVideoValidation, getWorkSetti
     if (!items.length && output.media?.length) return;
     const result = message((output.version ? 'v' + output.version + ' · ' : '') + output.message),
       links = document.createElement('div');
+    const firstSource = items.map(mediaSource).find(Boolean);
+    if (firstSource) {
+      result.dataset.previsJob = firstSource.jobId ?? firstSource.recoveredId ?? firstSource.uploadedId;
+      const label = document.createElement('strong');
+      label.textContent = '프리비즈 작업 ' + result.dataset.previsJob.slice(0,8) + ' · ';
+      result.prepend(label);
+    }
     const quality = output.intentQuality;
     if (quality) {
       const details = document.createElement('details');
@@ -529,6 +569,31 @@ export function initPrevis({request, apiUrl, renderVideoValidation, getWorkSetti
         player.src = apiUrl(media.url);
         result.append(player);
         const source = mediaSource(media);
+        if (source?.jobId) {
+          const revise = document.createElement('button');
+          revise.type = 'button';
+          revise.textContent = '이 프리비즈 수정';
+          revise.onclick = async () => {
+            if (chatBusy) return;
+            const version = ++editorVersion;
+            activePrevis = null;
+            try {
+              const context = await request('/api/jobs/' + source.jobId + '/revision-context');
+              if (version !== editorVersion) return;
+              revisionSourceJobId = context.sourceJobId;
+              sessionId = context.sessionId;
+              scenarioSessionId = null;
+              scenarioPrompt = context.scenePrompt || media.scenePrompt || '';
+              pendingScenarioTitles = context.scenarioTitles || undefined;
+              if ([5, 10, 15].includes(context.duration)) $('duration').value = String(context.duration);
+              if (context.aspect) $('aspect').value = context.aspect;
+              $('input').placeholder = '선택한 프리비즈의 수정 요청사항을 입력하세요.';
+              message('수정 기준 프리비즈 선택 · ' + source.jobId.slice(0, 8));
+              $('input').focus();
+            } catch (error) { message(error.message, 'error'); }
+          };
+          result.append(revise);
+        }
         if (source) void attachWan(result, source, media.scenePrompt ?? '', media.sourceDuration, media.workSettings);
       }
       const link = document.createElement('a');
@@ -574,6 +639,81 @@ export function initPrevis({request, apiUrl, renderVideoValidation, getWorkSetti
     restorePrevis();
     void loadSources(true);
     void restoreWanJobs(true);
+    void refreshJobPicker();
+  };
+
+  async function refreshJobPicker() {
+    const previous = jobPicker.value;
+    const responses = await Promise.allSettled([
+      request('/api/usage-history?offset=0&limit=100&hidden=false'), request('/api/video/jobs')
+    ]);
+    jobChoices.clear();
+    const labels = {running:'진행 중',queued:'대기',preparing:'준비 중',submitting:'요청 중',
+      downloading:'저장 중',completed:'완료',archived:'보관',failed:'실패'};
+    const items = responses[0].status === 'fulfilled' ? responses[0].value.items ?? [] : [];
+    for (const item of items) jobChoices.set('previs:' + item.jobId, {kind:'previs', item});
+    const videos = responses[1].status === 'fulfilled' ? responses[1].value.jobs ?? [] : [];
+    for (const item of videos) jobChoices.set('video:' + item.id, {kind:'video', item});
+    jobPicker.replaceChildren(new Option('최근 작업 선택 · 이전 기록은 History에서 불러오기', ''));
+    for (const [key, {kind,item}] of jobChoices) {
+      const id = item.jobId ?? item.id;
+      const title = (item.request || item.scenePrompt || '').replace(/\s+/g, ' ').slice(0,40);
+      jobPicker.append(new Option((kind === 'video' ? '영상' : '프리비즈') + ' · ' +
+        (labels[item.state] ?? item.state) + ' · ' + id.slice(0,8) + (title ? ' · ' + title : ''), key));
+    }
+    if (jobChoices.has(previous)) jobPicker.value = previous;
+    openJobButton.disabled = !jobChoices.size;
+    if (responses.every(result => result.status === 'rejected')) log('작업 목록을 불러오지 못했습니다.', true);
+  }
+
+  async function openHistoryJob(item) {
+    if (chatSubmitting) throw new Error('요청 접수가 끝난 후 작업을 선택해 주세요.');
+    editorVersion++;
+    $('console-chat-tab').click();
+    if (['running','queued'].includes(item.state)) {
+      const job = {jobId:item.jobId,sessionId:item.sessionId,version:item.version};
+      saveActivePrevis(job);
+      sessionId = item.sessionId;
+      scenarioSessionId = null;
+      scenarioPrompt = item.scenePrompt || item.request || '';
+      revisionSourceJobId = null;
+      void showPrevis(job,pendingPrevis('프리비즈 ' + item.jobId.slice(0,8) + ' · 작업 상태를 불러옵니다.'));
+    } else {
+      activePrevis = null;
+      const media = (item.previs ?? []).map(value => ({...value, name:'previs.mp4',mediaType:'video/mp4',
+        videoSource:{[item.kind === 'uploaded' ? 'uploadedId' : item.kind === 'recovered' ? 'recoveredId' : 'jobId']:item.jobId,
+                     mediaIndex:value.index ?? 0},
+        scenePrompt:item.scenePrompt || item.request || '',workSettings:item.workSettings}));
+      if (media.length) renderOutput({message:'불러온 프리비즈 · ' + item.jobId,media,version:item.version});
+      else message('작업 ' + item.jobId + ' · ' + (item.state === 'failed' ? '생성 실패 · History의 응답 JSON을 확인하세요.' : '보관된 프리비즈 파일이 없습니다.'));
+      if (item.kind === 'job' && media.length) {
+        revisionSourceJobId = item.jobId;
+        sessionId = item.sessionId;
+        scenarioSessionId = null;
+        scenarioPrompt = item.scenePrompt || item.request || '';
+        $('input').placeholder = '불러온 프리비즈의 수정 요청사항을 입력하세요.';
+      }
+      for (const video of item.videos ?? []) {
+        void request('/api/video/jobs/' + encodeURIComponent(video.id)).then(job => watchWan(job))
+          .catch(error => message(error.message,'error'));
+      }
+    }
+    $('messages').querySelector('[data-previs-job="' + CSS.escape(item.jobId) + '"]')?.scrollIntoView({block:'nearest'});
+  }
+
+  async function openVideoJob(item) {
+    $('console-chat-tab').click();
+    const job = await request('/api/video/jobs/' + encodeURIComponent(item.id));
+    void watchWan(job);
+    wanCards.get(job.id)?.container.scrollIntoView({block:'nearest'});
+  }
+  openJobButton.onclick = async () => {
+    const selection = jobChoices.get(jobPicker.value);
+    if (!selection) return;
+    try {
+      if (selection.kind === 'video') await openVideoJob(selection.item);
+      else await openHistoryJob(selection.item);
+    } catch (error) { message(error.message,'error'); }
   };
 
   function field(label, control) {
@@ -697,9 +837,9 @@ export function initPrevis({request, apiUrl, renderVideoValidation, getWorkSetti
     assetCount.className = 'wan-help';
     assetCount.setAttribute('role', 'status');
     const roleNames = {
-      character: '캐릭터',
       background: '배경',
-      other: '기타 (소품·스타일)',
+      character: '캐릭터',
+      object: '사물',
       audio: '음원'
     };
     let audioPicker;
@@ -1013,7 +1153,7 @@ export function initPrevis({request, apiUrl, renderVideoValidation, getWorkSetti
   function renderWanJob(job, outputTarget) {
     let card = wanCards.get(job.id);
     if (!card) {
-      const title = '영상 · ' + job.options.duration + '초 · ' + job.options.resolution;
+      const title = '영상 작업 ' + job.id.slice(0,8) + ' · ' + job.options.duration + '초 · ' + job.options.resolution;
       const container = message(title, 'wan-result');
       if (outputTarget?.isConnected) outputTarget.append(container);
       const label = document.createElement('small');
@@ -1219,17 +1359,15 @@ export function initPrevis({request, apiUrl, renderVideoValidation, getWorkSetti
   };
 
   return {
+    openHistoryJob,
+    openVideoJob,
     mediaSource,
     attachWan,
     getModel: () => $('chat-model').value,
     prepareScenario({prompt, sceneTitles, sessionId: savedSessionId}) {
       if (!prompt.trim()) throw new Error('시나리오 내용을 입력하세요.');
       const scenario = {prompt: prompt.trim(), sceneTitles: [...sceneTitles], sessionId: savedSessionId};
-      if (activeCount() > 0 || activePrevis?.jobId) {
-        queuedScenario = scenario;
-        if (activePrevis?.jobId && !chatBusy) restorePrevis();
-        return {queued: true};
-      }
+      if (chatSubmitting || shortformBusy || wanSubmitting.size) throw new Error('요청을 접수하고 있습니다. 잠시 후 다시 시도하세요.');
       applyScenario(scenario);
       return {queued: false};
     },

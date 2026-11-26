@@ -72,22 +72,31 @@ def adapt_scene_response(response, *, request, duration, titles=()):
             'adjustments':adjustments, 'conventions':deepcopy(CONVENTIONS)}
 
 
-def prepare_scene_execution(design, *, relations, request, limits=None):
-    execution, objects=merge_requested_props(request,design)
+def prepare_scene_execution(design, *, relations, request, limits=None, revision_request=None):
+    # The AI returns a complete revised scene. Do not resurrect its removals
+    # from historical nouns or reapply superseded source constraints.
+    effective_request=request if revision_request is None else revision_request
+    execution, objects=merge_requested_props(effective_request,design)
     if objects['skipped']:
         raise RelationError('필수 객체 수가 씬 한도를 초과합니다: '+str(objects['skipped']))
     before=deepcopy(execution)
     execution, correction=correct_scene(execution)
-    execution, relations, contacts=prepare_initial_contacts(execution,relations,request)
+    from .scene_background import prevent_background_intrusions
+    execution, background_placement=prevent_background_intrusions(execution,relations)
+    correction['backgroundPlacement']=background_placement
+    execution, relations, contacts=prepare_initial_contacts(execution,relations,effective_request)
     correction['initialContact']=contacts
-    supports, spatial, support_changes=normalize_support_relations(execution,relations,request)
+    supports, spatial, support_changes=normalize_support_relations(execution,relations,effective_request)
     subjects={s['id']:s for s in execution['subjects']}
     unresolved, usable_supports=[],[]
     generated={row['id'] for row in objects['added']}
+    from .resources.scene_props import CATALOG, scene_prop_parts
     for relation in supports:
         target=subjects.get(relation.get('target'))
         size=target.get('size') if target else None
-        if (target and (target['id'] in generated or
+        known_surface=bool(target and any(scene_prop_parts(target.get('label'))==CATALOG[key][1]
+                           for key in ('stage','table','chair','sofa','bench','bed')))
+        if (target and ((target['id'] in generated and not known_surface) or
                 (isinstance(size,list) and len(size)==3 and size[2]>2*min(size[:2])))):
             unresolved.append({'stage':'support_geometry','subject':relation.get('subject'),
                                'target':target['id'],'size':deepcopy(size),
@@ -95,7 +104,7 @@ def prepare_scene_execution(design, *, relations, request, limits=None):
         else:
             usable_supports.append(relation)
     execution, relation_quality=reconcile_relations(execution,spatial,
-        limits=derive_movement_limits(request,execution) if limits is None else limits)
+        limits=derive_movement_limits(effective_request,execution) if limits is None else limits)
     execution, state=resolve_scene_state(execution,usable_supports)
     state['relationNormalization']=support_changes
     state['warnings'].extend(unresolved)

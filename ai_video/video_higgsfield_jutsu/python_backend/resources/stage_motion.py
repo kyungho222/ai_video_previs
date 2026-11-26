@@ -577,6 +577,14 @@ def _previs_validate_visibility(requirements=None):
     def center(obj):
         return obj.evaluated_get(dependency_graph).matrix_world.translation.copy()
 
+    def occluder_owner(name):
+        obj = scene.objects.get(name)
+        while obj is not None:
+            if obj.get('previs_kind'):
+                return obj.name
+            obj = obj.parent
+        return name
+
     def body_points(subject):
         if subject["head"] is not None and subject["torso"] is not None:
             return [center(subject["head"]), center(subject["torso"])]
@@ -595,9 +603,11 @@ def _previs_validate_visibility(requirements=None):
     threshold = max(2, math.ceil(fps * .5))
     results = [{"subject": subject["root"].name, "testedFrames": 0, "blockedBodyFrames": 0,
                 "longestBlockedFrames": 0, "firstBlockedFrame": None, "occluders": set(),
+                "bodyOccluderFrames": {}, "bodyOccluderLongestRun": {},
                 "handBlockedFrames": {name: 0 for name in subject["hands"]}}
                for subject in subjects]
     runs = [0] * len(subjects)
+    blocker_runs = [{} for _ in subjects]
     previous_frame = scene.frame_current
     try:
         for frame in range(scene.frame_start, scene.frame_end + 1):
@@ -611,6 +621,7 @@ def _previs_validate_visibility(requirements=None):
                 record = results[index]
                 if active_names is not None and subject["root"].name not in active_names:
                     runs[index] = 0
+                    blocker_runs[index].clear()
                     continue
                 points = body_points(subject)
                 if not points:
@@ -618,6 +629,12 @@ def _previs_validate_visibility(requirements=None):
                 record["testedFrames"] += 1
                 blockers = [occluder(origin, point) for point in points]
                 record["occluders"].update(name for name in blockers if name is not None)
+                body_blockers = {occluder_owner(name) for name in blockers} if all(name is not None for name in blockers) else set()
+                for name in set(blocker_runs[index]) | body_blockers:
+                    blocker_runs[index][name] = blocker_runs[index].get(name, 0) + 1 if name in body_blockers else 0
+                    if name in body_blockers:
+                        record['bodyOccluderFrames'][name] = record['bodyOccluderFrames'].get(name, 0) + 1
+                        record['bodyOccluderLongestRun'][name] = max(record['bodyOccluderLongestRun'].get(name, 0), blocker_runs[index][name])
                 if all(name is not None for name in blockers):
                     record["blockedBodyFrames"] += 1
                     runs[index] += 1

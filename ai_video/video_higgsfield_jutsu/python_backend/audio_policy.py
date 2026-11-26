@@ -2,6 +2,15 @@
 
 import re
 
+VOICE_PERFORMANCE_RULES = (
+    "VOICE DELIVERY: Default to brisk, natural conversational pacing, crisp consonants and short pauses. "
+    "Never stretch syllables, slow speech or add long gaps to fill a shot; leave reaction time after a line. "
+    "Explicit slow delivery, singing tempo and user timing take priority. "
+    "For joint greetings, chants, duets or requested overlap, mix two or more distinct voices simultaneously; "
+    "retain each speaker's timbre and lip sync, not one narrator. "
+    "Preserve overlapping line times instead of serializing them; preserve requested solo turns."
+)
+
 LANGUAGE_RULES = """SPOKEN DIALOGUE LANGUAGE
 Follow any language explicitly requested for speech, lyrics, or vocals in the current user prompt, even if it differs from a stored voice profile or the defaults below. Apply the override only to the specified speakers, lines, or audio; preserve the voice's timbre and cadence. The language used to write the prompt does not itself specify the audio language.
 Where the current user prompt leaves the language unspecified, assign it using these defaults and the character settings or asset descriptions.
@@ -14,7 +23,7 @@ SONG AND VOCAL LANGUAGE
 Apply the same language assignment to all intelligible sung words, lyrics, and chants, including background music. For a named character, use that character's assigned language consistently. For an unidentified singer, choir, or background vocal, default to Korean. Preserve the intended meaning of supplied lyrics in the assigned language. Keep instrumental music and wordless melodies free of added lyrics or speech. Respect explicit silence.
 MULTI-SPEAKER VOICE CAST
 When the script assigns lines to multiple characters, give each one a persistent speaker label tied to their asset identity and a distinct voice timbre, pitch range and speaking cadence consistent with the stated character settings. Keep each speaker's voice stable across close-ups, turns and shot changes.
-Write requested dialogue line by line with its time range, speaker name and quoted words. Each solo line is audibly spoken by that named on-screen character with matching lip sync; the other characters listen or react. Preserve every requested speaker and line through prompt optimization. For explicitly shared greetings, layer all assigned individual voices together in unison, retaining the same voices used in their solo turns. Keep dialogue clearly audible above music and audience cheers. Restrict speaking roles and overlap to the script assignments."""
+Write requested dialogue line by line with its time range, speaker name and quoted words. Each solo line is audibly spoken by that named on-screen character with matching lip sync; characters without an active vocal part listen or react. Preserve every requested speaker and line through prompt optimization. For shared greetings, layer all assigned individual voices together in unison, retaining the same voices used in their solo turns. Simultaneous different lines use separate dialogue entries with overlapping time ranges; do not serialize them or replace the group with one narrator. Keep dialogue clearly audible above music and audience cheers. Restrict speaking roles to the requested cast."""
 
 
 AUDIO_PRODUCTION_RULES = """VOCALS AND ACCOMPANIMENT
@@ -24,7 +33,7 @@ Singing, rapping, chanting and humming are vocal performances even when the dial
 MUSIC_STYLE_RULES = """KOREAN MUSIC STYLE DEFAULT
 When generating music, default unspecified melody, rhythm, instrumentation, and arrangement to a natural Korean musical atmosphere appropriate to the scene. Contemporary Korean music is suitable; explicit user music styles and genres take precedence over this default. Do not force traditional Korean instruments or a traditional genre unless requested or appropriate to the scene. This style default does not authorize adding music, lyrics, or voices outside the requested audio scope. Do not restyle or regenerate uploaded audio; preserve the user's supplied recording as the priority background track."""
 
-SPEECH_LANGUAGE_RULES = LANGUAGE_RULES + "\n" + AUDIO_PRODUCTION_RULES + "\n" + MUSIC_STYLE_RULES
+SPEECH_LANGUAGE_RULES = LANGUAGE_RULES + "\n" + AUDIO_PRODUCTION_RULES + "\n" + MUSIC_STYLE_RULES + "\n" + VOICE_PERFORMANCE_RULES
 
 
 def requires_vocal_profile(action):

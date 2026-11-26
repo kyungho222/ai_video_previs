@@ -14,10 +14,13 @@ const {
 });
 const $ = id => document.getElementById(id);
 const roles = {
-  character: '캐릭터',
   background: '배경',
-  other: '소품·기타'
+  character: '캐릭터',
+  object: '사물',
+  audio: '음원'
 };
+const imageAssets = () => assets.filter(asset => asset.role !== 'audio');
+const audioAssets = () => assets.filter(asset => asset.role === 'audio');
 const draftKey = 'wan-upload.draft.v1',
   pendingKey = 'wan-upload.pending.v1';
 let config = null,
@@ -110,7 +113,7 @@ function updateControls() {
       opening ? '합성 구도 이미지와 프리비즈 MP4를 함께 전달합니다. MP4의 카메라 경로를 유지하고 세부 동작은 자연스럽게 재구성합니다.' :
       '멤버별 참조 이미지와 배경 에셋, 프리비즈 MP4를 함께 전달합니다.';
   }
-  if (spatial && $('spatial-input').value === 'references') $('guide-help').textContent += ' AI가 씬·카메라·등장·배치 변화와 최종 구도를 선택합니다. 에셋 ' + assets.length + '장 기준 가이드는 최대 ' + Math.max(0, 10 - assets.length) + '장입니다. 이미지 생성 수에 따라 요금과 시간이 늘어납니다.';
+  if (spatial && $('spatial-input').value === 'references') $('guide-help').textContent += ' AI가 씬·카메라·등장·배치 변화와 최종 구도를 선택합니다. 이미지 에셋 ' + imageAssets().length + '장 기준 가이드는 최대 ' + Math.max(0, 10 - imageAssets().length) + '장입니다. 이미지 생성 수에 따라 요금과 시간이 늘어납니다.';
   if (spatial && $('spatial-input').value !== 'references') $('guide-help').textContent += ' 시작·종료 방식은 별도 에셋 이미지를 보내지 않으므로, 해당 프레임 밖 캐릭터의 외형 유지가 약해질 수 있습니다.';
   const endpointsUnsupported = endpoints && config && !config.spatialInputFormats?.includes('first_frame');
   if (endpointsUnsupported) $('guide-help').textContent = '선택 모델이 시작 이미지 입력을 지원하지 않습니다.';
@@ -121,15 +124,18 @@ function updateControls() {
 
 function renderAssets() {
   $('asset-previews').replaceChildren();
-  $('asset-count').textContent = '등록한 에셋 ' + assets.length + '/10개';
+  $('asset-count').textContent = '이미지 ' + imageAssets().length + '/10개 · 음원 ' + audioAssets().length + '/' + (config?.referenceAudioLimit ?? 5) + '개';
+  let imageNumber = 0, audioNumber = 0;
   assets.forEach((asset, index) => {
     const tile = document.createElement('div');
     tile.className = 'asset-tile';
-    const image = document.createElement('img');
+    const audio = asset.role === 'audio';
+    const image = document.createElement(audio ? 'audio' : 'img');
     image.src = apiUrl('/api/video/assets/' + asset.id);
-    image.alt = roles[asset.role] + ' 에셋';
+    if (audio) { image.controls = true; image.preload = 'metadata'; }
+    else image.alt = roles[asset.role] + ' 에셋';
     const title = document.createElement('strong');
-    title.textContent = 'Image ' + (index + 1) + ' · ' + roles[asset.role];
+    title.textContent = (audio ? 'Audio ' + (++audioNumber) : 'Image ' + (++imageNumber)) + ' · ' + roles[asset.role];
     const name = document.createElement('span');
     name.textContent = asset.name;
     const remove = document.createElement('button');
@@ -219,8 +225,10 @@ for (const input of document.querySelectorAll('[data-role]')) input.onchange = a
   const files = Array.from(input.files ?? []);
   input.value = '';
   if (!files.length || busy || pending) return;
-  if (files.length + assets.length > 10 || files.some(file => file.size > 20 * 1024 * 1024)) {
-    feedback('에셋은 총 10개까지, 이미지당 20MB 이하로 선택하세요.', true);
+  const audio = input.dataset.role === 'audio';
+  const limit = audio ? config?.referenceAudioLimit ?? 5 : 10;
+  if (files.length + (audio ? audioAssets().length : imageAssets().length) > limit || files.some(file => file.size > (audio ? 10 : 20) * 1024 * 1024)) {
+    feedback(audio ? '음원은 최대 ' + limit + '개, 파일당 10MB 이하로 선택하세요.' : '이미지는 총 10개까지, 이미지당 20MB 이하로 선택하세요.', true);
     return;
   }
   busy = true;
@@ -423,7 +431,7 @@ $('generation-form').onsubmit = async event => {
       feedback('생성 길이는 양의 정수로 입력하세요.', true);
       return;
     }
-    if ((['text_endpoints', 'text_continuity'].includes($('reference-mode').value) || $('reference-mode').value.startsWith('spatial')) && !assets.length) {
+    if ((['text_endpoints', 'text_continuity'].includes($('reference-mode').value) || $('reference-mode').value.startsWith('spatial')) && !imageAssets().length) {
       feedback('공간 가이드에 적용할 에셋을 추가하세요.', true);
       return;
     }
@@ -500,7 +508,7 @@ async function start() {
     const draft = JSON.parse(localStorage.getItem(draftKey) || 'null');
     if (draft) {
       selectedId = draft.selectedId ?? '';
-      assets = Array.isArray(draft.assets) ? draft.assets.filter(asset => /^[a-f0-9-]{36}$/.test(asset.id) && roles[asset.role]).slice(0, 10) : [];
+      assets = Array.isArray(draft.assets) ? draft.assets.map(asset => ({...asset, role: asset.role === 'other' ? 'object' : asset.role})).filter(asset => /^[a-f0-9-]{36}$/.test(asset.id) && roles[asset.role]).slice(0, 15) : [];
       for (const id of ['prompt', 'duration', 'resolution', 'region', 'reference-mode', 'spatial-input', 'guide-count', 'scene-project'])
         if ((id !== 'reference-mode' || draft.inputPolicy === 'camera-text-endpoints-v1') && (id !== 'guide-count' || draft.guideSelection === 'key_scenes_v1') && draft[id] && (!$(id).options || [...$(id).options].some(option => option.value === draft[id]))) $(id).value = draft[id];
       restoredRegion = ['singapore', 'beijing'].includes(draft.region);

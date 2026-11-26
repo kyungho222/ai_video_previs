@@ -141,6 +141,8 @@ class MediaArchive:
             if isinstance(project, str) and re.fullmatch(UUID, project):
                 media_projects[str(index)] = project
         data = {"version": 1, "remoteProjects": projects, "mediaProjects": media_projects,
+                'sceneId':job.get('sceneId'), 'sceneVersion':job.get('version'),
+                'duration':job.get('duration'), 'aspect':job.get('aspect'),
                 "sessionId": job.get("sessionId"),
                 "request": job.get("request", ""),
                 "plan": job.get("plan", {}), "sceneDesign": job.get("sceneDesign"), "sceneState": job.get("sceneState"),
@@ -150,7 +152,9 @@ class MediaArchive:
                 "spatialManifestRef": job.get("spatialManifestRef")}
         if job.get("scenarioTitles"):
             data["scenarioTitles"] = job["scenarioTitles"]
-        for field in ('sceneDirection', 'directionAdjustments', 'sceneDesignBeforeCorrection', 'serverSceneCorrection', 'rawSceneDirection', 'rawSceneModelResponse', 'normalizedSceneDirection', 'normalizationChanges', 'canonicalSceneStatus', 'intentQuality', 'cameraQuality'):
+        if job.get('revisionApplication'):
+            data['revisionApplication']=job['revisionApplication']
+        for field in ('sceneDirection', 'directionAdjustments', 'sceneDesignBeforeCorrection', 'serverSceneCorrection', 'rawSceneDirection', 'rawSceneModelResponse', 'normalizedSceneDirection', 'normalizationChanges', 'canonicalSceneStatus', 'designValidation', 'designExecutionValidation', 'relationQuality', 'runtimeValidation', 'intentQuality', 'cameraQuality'):
             if field in job:
                 data[field] = job[field]
         if job.get("workSettings"):

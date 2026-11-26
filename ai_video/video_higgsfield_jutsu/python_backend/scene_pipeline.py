@@ -62,6 +62,7 @@ Positions are world metres, Z up, ground z=0; subject front is +Y, yaw is degree
 Props such as furniture are subjects of kind prop. Shapes are blocking geometry only.
 Each action's position/yaw are the END ROOT/FEET position/yaw, never a hand or held prop location.
 Stationary reach/hold/point gestures keep the actor root on its established support; animate the prop separately.
+Gesture and vocal channels never translate or rotate the actor root. Use an explicit movement/posture action for root changes.
 Keep furniture footprints separate from standing actor roots and place cups on visible supporting surfaces.
 Python interpolates root transforms from the prior state.
 Every action lasts for its enclosing beat. Simultaneous posture or movement, arm gesture, and speech may share a beat. Use only one action per channel and do not combine posture change with movement in the same beat. Omitted actors hold their prior pose.
@@ -135,7 +136,19 @@ async def plan_scene(request, job, history, emit, *, feedback=None):
                'scenarioTitles': job.get('scenarioTitles', []), 'history': context,
                'baseline': job.get('sceneDirection') or (job.get('baseSnapshot') or {}).get('sceneDirection')
                    or job.get('sceneDesign') or (job.get('baseSnapshot') or {}).get('sceneDesign')}
-    hints = extract_prompt_hints(job.get('scenePrompt') or current_request)
+    revising=bool(job.get('baseSnapshot'))
+    if revising:
+        executed=(job['baseSnapshot'].get('sceneDesign') or {}).get('subjects',[])
+        authored={s['id']:s for s in (payload.get('baseline') or {}).get('subjects',[])}
+        actual_overrides=[{'id':s['id'],**{key:s[key] for key in ('size','position','yaw')
+                            if key in s and s.get(key)!=authored.get(s['id'],{}).get(key)}}
+                          for s in executed]
+        actual_overrides=[s for s in actual_overrides if len(s)>1]
+        payload['revision']={'sourceJobId':job['baseSnapshot'].get('id'), 'baseVersion':job.get('baseVersion'),
+                             'latestRequest':current_request,
+                             'executedObjectOverrides':actual_overrides,
+                             'rule':'Return the complete revised scene. Apply requested object removals and changes to actions, staging, camera and timing. Preserve unrelated baseline details. Latest request supersedes old constraints.'}
+    hints = extract_prompt_hints(current_request if revising else job.get('scenePrompt') or current_request)
     job['pythonPromptHints'] = hints
     payload['pythonExtractedHints'] = hints
     if feedback:
@@ -161,7 +174,7 @@ async def plan_scene(request, job, history, emit, *, feedback=None):
         try:
             value = extract_scene_object(response)
             job['rawSceneDirection'] = value
-            adapted = await adapt_with_completion(request, response, job, source=request_sources(current_request, history),
+            adapted = await adapt_with_completion(request, response, job, source=current_request if revising else request_sources(current_request, history),
                                            duration=job['duration'], titles=job.get('scenarioTitles') or ())
             if job.get('sceneAdapterCompletion', {}).get('used'):
                 completion = job['sceneAdapterCompletion']
@@ -191,17 +204,37 @@ async def plan_scene(request, job, history, emit, *, feedback=None):
             job.setdefault('designValidation', []).append({'attempt': attempt, 'model': model,
                                                           'error': issue, 'issues': issues})
             emit('checkpoint', None)
-            emit('log', '[previs-design] 장면 정규화·실행 검증 실패 · 의미 손실 방지를 위해 중단')
-            messages.extend([
-                {'role': 'assistant', 'content': json.dumps(value, ensure_ascii=False) if value is not None else '[invalid JSON]'},
-                {'role': 'user', 'content': json.dumps({
-                    'instruction': 'Correct ALL listed issues together in one complete scene JSON. Preserve user intent. Do not fix only the first issue.',
-                    'validationIssues': issues}, ensure_ascii=False)},
-            ])
-            continue
+            emit('log', '[previs-design] 검증 오류: ' + json.dumps(issues, ensure_ascii=False))
+            from .scene_recovery import recover_scene
+            try:
+                recovered = recover_scene(job.get('rawSceneDirection'),
+                    source=current_request if revising else request_sources(current_request, history), duration=job['duration'],
+                    titles=job.get('scenarioTitles') or ())
+            except (ValueError, TypeError, KeyError, AttributeError) as recovery_error:
+                job.setdefault('designValidation', []).append({'stage':'local_recovery',
+                    'error':str(recovery_error), 'issues':getattr(recovery_error,'issues',[])})
+                emit('log', '[previs-design] 실행 가능한 장면 복구 실패: ' + str(recovery_error))
+                continue
+            design, value = recovered['execution'], recovered['direction']
+            job['designValidation'][-1]['issues'] = recovered['errors'] or issues
+            job['normalizedSceneDirection'] = recovered['normalized']
+            job['normalizationChanges'] = recovered['changes']
+            job['canonicalSceneStatus'] = 'recovered'
+            job['sceneDirection'] = value
+            job.setdefault('directionAdjustments', []).extend(recovered['adjustments'])
+            job['sceneAdapter'] = {'version':1, 'status':'recovered',
+                'conventions':recovered['conventions'], 'normalizationChanges':recovered['changes']}
+            emit('log', '[previs-design] Python 복구 후 생성 계속: ' + json.dumps({
+                'issues':recovered['errors'], 'changes':recovered['changes']}, ensure_ascii=False))
         job['sceneDesign'] = design
         job['plan'] = legacy_plan(design)
         job['pipeline'] = {'version': 'direction-v2', 'model': model}
+        if job.get('normalizationChanges'):
+            emit('log', '[previs-normalization] ' + json.dumps(job['normalizationChanges'], ensure_ascii=False))
+        if job.get('sceneAdapterCompletion'):
+            emit('log', '[previs-adapter-diagnostics] ' + json.dumps(job['sceneAdapterCompletion'], ensure_ascii=False))
+        if job.get('designValidation'):
+            emit('log', '[previs-validation-history] ' + json.dumps(job['designValidation'], ensure_ascii=False))
         emit('checkpoint', None)
         emit('log', '[previs-design] 장면 설계 검증 완료 · Python 실행 준비')
         return design
@@ -297,12 +330,25 @@ async def run_scene(client, job, design, history, emit):
     try:
         prepared = prepare_scene_execution(design,
             relations=(job.get('sceneDirection') or {}).get('relations') or [],
-            request=job.get('scenePrompt') or job.get('request', ''))
+            request=job.get('scenePrompt') or job.get('request', ''),
+            revision_request=job.get('request','') if job.get('baseSnapshot') else None)
     except RelationError as error:
-        job['relationQuality'] = {'status': 'failed', 'error': str(error)}
+        job['relationQuality'] = {'status': 'warning', 'error': str(error)}
+        emit('log', '[previs-relations] 관계 보정 오류 · 기존 유효 장면으로 계속: ' + str(error))
         emit('checkpoint', None)
-        raise RuntimeError('객체 관계 품질 검증 실패: ' + str(error)) from error
+        fallback, correction = correct_scene(design)
+        prepared = {'execution':fallback, 'objects':{}, 'beforeCorrection':design,
+                    'correction':correction, 'relationQuality':job['relationQuality'],
+                    'sceneState':{'warnings':[{'stage':'relations','message':str(error)}]},
+                    'version':1, 'conventions':{},
+                    'unresolved':[{'stage':'relations','message':str(error)}]}
     design = prepared['execution']
+    if job.get('baseSnapshot'):
+        from .scene_revision import revision_diagnostics
+        job['revisionApplication']=revision_diagnostics(job['baseSnapshot'],design,job.get('request',''))
+        emit('log','[previs-revision] 기존 장면 수정 · 기준 '+str(job['baseSnapshot'].get('id'))
+             +' · 객체 삭제 '+str(len(job['revisionApplication']['removedObjectIds']))
+             +'개 · 변경 '+str(len(job['revisionApplication']['changedObjectIds']))+'개')
     job['objectUnion'] = prepared['objects']
     job['sceneDesignBeforeCorrection'] = prepared['beforeCorrection']
     job['serverSceneCorrection'] = prepared['correction']
@@ -345,13 +391,28 @@ async def run_scene(client, job, design, history, emit):
     emit('checkpoint', None)
     if operation.get('status') != 'succeeded':
         error = operation.get('error') or content.get('error') or {}
-        message = str(error.get('message') or error)[:1500]
+        message = str(error.get('message') or error)
         if error.get('code') == 'PYTHON_EXCEPTION' and 'Python camera framing could not fit focus geometry' in message:
             raise SceneDesignError(message)
         raise RuntimeError('Python 장면 실행 실패: ' + message)
     validation = (operation.get('result') or {}).get('declarativeValidation') or {}
     job['runtimeValidation'] = validation
     job['serverSceneCorrection']['runtime'] = (operation.get('result') or {}).get('serverCorrection', {})
+    from .previs_reference import screen_order_changes
+    runtime = job['serverSceneCorrection']['runtime']
+    emit('log', '[previs-runtime-validation] ' + json.dumps(validation, ensure_ascii=False))
+    for diagnostic_key in ('projectionWarnings', 'cameraMotionWarnings', 'secondaryVisibility'):
+        if runtime.get(diagnostic_key):
+            emit('log', '[previs-runtime-' + diagnostic_key + '] ' + json.dumps(runtime[diagnostic_key], ensure_ascii=False))
+    hidden_secondary=(runtime.get('secondaryVisibility') or {}).get('hidden') or []
+    if hidden_secondary:
+        emit('log','[previs-visibility] 주 피사체 가림 완화 · 보조 객체 표시 제외 '
+             + str(len(hidden_secondary))+'개 · 재검사 완료 · 객체 데이터 유지')
+    if runtime.get('screenComposition'):
+        runtime['screenComposition']['orderChanges'] = screen_order_changes(runtime)
+        emit('log', '[previs-composition] 실제 화면 배치 기록 · 표본 '
+             + str(len(runtime['screenComposition'].get('samples', []))) + '개 · 좌우 순서 변경 '
+             + str(len(runtime['screenComposition']['orderChanges'])) + '건')
     projection_warnings = job['serverSceneCorrection']['runtime'].get('projectionWarnings') or []
     seen_projection_issues = set()
     for row in projection_warnings:
@@ -369,12 +430,17 @@ async def run_scene(client, job, design, history, emit):
         job.setdefault('designExecutionValidation', []).append({'issues': issues, 'validation': validation})
         issue = '장면 구도·가시성 검증 실패: ' + json.dumps(issues, ensure_ascii=False)
         job.setdefault('designExecutionWarnings', []).append(issue)
-        emit('log', '[previs-design] 검증 경고 · 보정 한도 도달 · 현재 최종 장면으로 렌더링 계속')
+        emit('log', '[previs-design] 검증 경고 · 현재 최종 장면으로 렌더링 계속: ' + json.dumps(issues, ensure_ascii=False))
     job['sceneDesign'], job['plan'] = design, legacy_plan(design)
     job['mutated'] = True
     job['composition']['state'] = 'completed'
     runtime = job['serverSceneCorrection']['runtime']
     quality = assess_intent(job.get('sceneDirection'), design, runtime, request_sources(job.get('request', ''), history))
+    recovery_issues = [issue for row in job.get('designValidation', []) for issue in row.get('issues', [])]
+    relation_issues = [{'path':'relations', 'message':job['relationQuality']['error']}] if job.get('relationQuality',{}).get('error') else []
+    if recovery_issues or relation_issues:
+        quality['status'] = 'mismatch'
+        quality['issues'].extend(recovery_issues + relation_issues)
     if not validation.get('passed'):
         quality['status'] = 'mismatch'
         quality['issues'].extend(i for i in execution_validation_issues(validation)
@@ -386,6 +452,8 @@ async def run_scene(client, job, design, history, emit):
                             'status': 'mismatch' if quality['issues'] else quality['camera']['status'],
                             'framingChecked': bool(runtime.get('cameraQuality'))}
     emit('log', '[previs-intent] 실행 불일치 ' + str(len(quality['issues'])) + '건 · 의미 일치 확인 불가 · 추가 AI 호출 없음')
+    if quality['issues']:
+        emit('log', '[previs-intent-details] ' + json.dumps(quality['issues'], ensure_ascii=False))
     if quality.get('status') == 'mismatch':
         job.setdefault('qualityWarnings', []).append({'stage': 'previs_execution', 'issues': quality.get('issues', [])})
         emit('log', '[previs-quality] 장면 실행 조건 미달 · 경고 기록 후 렌더링 계속')

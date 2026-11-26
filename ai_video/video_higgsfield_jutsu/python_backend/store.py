@@ -159,7 +159,10 @@ class JobStore(MemoryDatabase):
         return ''
 
     def create(self, message, session_id=None, duration=5, aspect="16:9", new_scene=False, *,
-               scenario_titles=None, work_settings=None):
+               scenario_titles=None, work_settings=None, baseline=None):
+        if baseline is not None and (not isinstance(baseline,dict) or not baseline.get('id')
+                                     or not baseline.get('sceneDesign')):
+            raise ValueError('수정 기준 프리비즈의 장면 정보를 확인할 수 없습니다.')
         with self.db() as db:
             db.execute("BEGIN IMMEDIATE")
             self._expire(db)
@@ -235,6 +238,14 @@ class JobStore(MemoryDatabase):
                 history = [{"role": "user", "content": data.get("scenePrompt", "")}]
             else:
                 history = []
+            if baseline is not None and not new_scene:
+                base_snapshot=json.loads(json.dumps(baseline))
+                scene_id=baseline.get('sceneId') or baseline['id']
+                base_version=baseline.get('version')
+                version=max(db.execute('SELECT COALESCE(MAX(version),0)+1 FROM scene_versions WHERE scene=?',
+                                       (scene_id,)).fetchone()[0],
+                            base_version+1 if type(base_version) is int else 1)
+                history=[{'role':'user','content':baseline.get('scenePrompt','')}]
             history.append({"role": "user", "content": message})
             job = {
                 "id": str(uuid4()),
@@ -244,7 +255,7 @@ class JobStore(MemoryDatabase):
                 "mutated": False,
                 "sceneId": scene_id,
                 "version": version,
-                "baseVersion": base[1] if base else None,
+                "baseVersion": base_snapshot.get('version') if base_snapshot else None,
                 "request": message,
                 "baseSnapshot": base_snapshot,
                 "codeOperations": [],
@@ -275,7 +286,8 @@ class JobStore(MemoryDatabase):
                 job["id"],
                 "log",
                 f"v{version} 프리비즈 "
-                + (f"수정 중 · 기준 v{base[1]}" if base else "새로 생성 중"),
+                + ((f"수정 중 · 기준 v{base_snapshot['version']}" if base_snapshot.get('version') is not None
+                    else '수정 중 · 보관된 프리비즈 기준') if base_snapshot else "새로 생성 중"),
             )
             return job, session_id, history[-20:]
 

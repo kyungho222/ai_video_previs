@@ -252,21 +252,25 @@ def execution_scene(value, duration, *, titles=(), request=''):
         if subject not in ids:
             repairs.append('알 수 없는 대상의 동작 제외')
             continue
-        start = max(previous.get(subject, 0), number(track.get('start'), 0, duration))
+        action = track.get('action') if track.get('action') in ACTIONS else 'move'
+        if kinds[subject] != 'human' and action in HUMAN_GESTURES + ('slap', 'point', 'raise_hand', 'wave', 'wave_both', 'hand_heart', 'clap', 'kick', 'stomp', 'dance', 'sit', 'speak'):
+            action = 'move'
+        channel = action_channel(action) if 'channel' in track else 'legacy'
+        key = (subject, channel)
+        start = max(previous.get(key, 0), number(track.get('start'), 0, duration))
         minimum_span = 1 / 24 + 1e-6
         if duration - start < minimum_span:
             repairs.append('출력 길이 밖의 동작 제외')
             continue
         end = number(track.get('end'), start + minimum_span, duration, duration)
         target = reference(track.get('target'))
-        target = target if target in ids and target != subject else None
-        action = track.get('action') if track.get('action') in ACTIONS else 'move'
-        if kinds[subject] != 'human' and action in HUMAN_GESTURES + ('slap', 'point', 'raise_hand', 'wave', 'wave_both', 'hand_heart', 'clap', 'kick', 'stomp', 'dance', 'sit', 'speak'):
-            action = 'move'
+        target = target if (target in ids and target != subject) or (target == 'camera' and action == 'point') else None
         normalized_tracks.append({'subject': subject, 'action': action, 'start': start, 'end': end,
+            **({'channel':channel} if channel != 'legacy' else {}),
+            **({'sourceBeat':track['sourceBeat']} if type(track.get('sourceBeat')) is int and track['sourceBeat'] >= 0 else {}),
             'position': vector(track.get('position'), -50, 50, [0, 0, 0], ground=True),
             'yaw': number(track.get('yaw'), -720, 720), 'target': target})
-        previous[subject] = end
+        previous[key] = end
     raw_scenes = source.get('scenes')
     raw_scenes = [s for s in raw_scenes if isinstance(s, dict)][:40] if isinstance(raw_scenes, list) else []
     count = len(titles) or len(raw_scenes) or 1

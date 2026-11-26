@@ -57,6 +57,7 @@ from .prompt_filter import apply_presentation_rules, attach_presentation_rules
 
 from .video_results import LostLease
 from .guide_gate import guide_decision
+from .asset_object_bindings import AssetObjectBindings
 
 def verified_guide_inputs(mode, spatial_input, guides, asset_count, image_limit):
     accepted = [guide for guide in guides if guide["status"] == "verified"]
@@ -175,10 +176,12 @@ async def _prepare_submission(self, job, owner, reference, folder, update):
     if options.get("previsTranscript") == "camera_timeline_v1":
         timeline_directory = folder / "camera-timeline"
         try:
-            stored = native_timeline((source_scene_reference(self.service, job['source']) or {}).get('sceneDesign'),
-                                     metadata.get('duration') or options['duration'])
+            scene_reference = source_scene_reference(self.service, job['source']) or {}
+            scene_runtime = (scene_reference.get('serverSceneCorrection') or {}).get('runtime')
+            stored = native_timeline(scene_reference.get('sceneDesign'),
+                                     metadata.get('duration') or options['duration'], runtime=scene_runtime)
             transcript = ({'plan':stored, 'sourceDuration':metadata.get('duration') or options['duration'],
-                           'method':'stored_scene_design'} if stored else await describe_previs(
+                           'method':'rendered_scene_composition' if stored and any('rendered_camera' in s.get('movement','') for s in stored['segments']) else 'stored_scene_design'} if stored else await describe_previs(
                 reference, timeline_directory, request=optimize_request, model=review_model,
                 brief=scene_prompt + "\n" + generation_prompt, assets=asset_files,
                 native=await self.native_scene_manifest(job["source"]),
@@ -202,7 +205,7 @@ async def _prepare_submission(self, job, owner, reference, folder, update):
         update(message="캐릭터 참조 이미지를 멤버별로 준비합니다.")
         guide_directory.mkdir(parents=True, exist_ok=True)
         parts = metadata.get("characterAssetParts")
-        if parts is None:
+        if parts is None or metadata.get('characterAssetLayout')!='single':
             analyzer = SpatialGuideBuilder(
                 optimize_request,
                 None,
@@ -227,6 +230,7 @@ async def _prepare_submission(self, job, owner, reference, folder, update):
                 self.service.archive.track(key, path, created=job["created"], reuse_path=True)
                 asset["mediaType"] = "image/png"
         metadata["characterAssetParts"] = parts
+        metadata['characterAssetLayout']='single'
         update(metadata=metadata)
     if spatial:
         bundle, mode, spatial_input = await self._prepare_spatial_guides(
@@ -256,9 +260,10 @@ async def _prepare_submission(self, job, owner, reference, folder, update):
         len(asset_files) if spatial_input == "references" or not spatial else 0,
     )
     parts = metadata.get("characterAssetParts")
-    if bundle is None and parts is None and api_key and any(asset["role"] == "character" for asset in asset_files):
+    if bundle is None and (parts is None or metadata.get('characterAssetLayout')!='single') and any(asset["role"] == "character" for asset in asset_files):
         parts = await SpatialGuideBuilder(optimize_request, None, model=review_model).detect_asset_parts(asset_files)
         metadata["characterAssetParts"] = parts
+        metadata['characterAssetLayout']='single'
         update(metadata=metadata)
     records = character_records(options.get("assets", []), bundle, parts=parts)
     cast = self.store.register_characters(records) if records else []
@@ -690,6 +695,7 @@ async def _prepare_spatial_guides(
         reference,
         asset_files,
         guide_directory,
+        job_id=job_id,
         count=options.get("spatialGuideCount", 3),
         input_format=spatial_input,
         brief=scene_prompt + "\n" + generation_prompt + (
@@ -699,6 +705,8 @@ async def _prepare_spatial_guides(
             if options.get("previsTranscript") else ""
         ),
         scene_manifest=native,
+        binding_store=AssetObjectBindings(self.root / 'runtime/data/asset-object-bindings.sqlite3') if native else None,
+        binding_source=json.dumps(job['source'],sort_keys=True),
         progress=progress,
         check_owner=owner_check,
         selection=options.get("spatialGuideSelection", "uniform"),

@@ -33,11 +33,8 @@ MAX_IMAGES = 10
 
 
 
-ROLES = {
-    "character": "character appearance",
-    "background": "background and environment",
-    "other": "props and visual style",
-}
+from .asset_roles import IMAGE_ROLES
+ROLES = IMAGE_ROLES
 
 
 

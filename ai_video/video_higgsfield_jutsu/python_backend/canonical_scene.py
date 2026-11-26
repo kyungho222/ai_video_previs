@@ -3,7 +3,7 @@ from copy import deepcopy
 import math
 import re
 from .resources.scene_props import CATALOG, scene_prop_parts
-from .scene_contract import ACTIONS, KINDS, action_channel
+from .scene_contract import ACTIONS, KINDS, CAMERA, action_channel
 
 class CanonicalSceneError(ValueError):
     pass
@@ -132,6 +132,22 @@ def normalize_scene(value):
     for index, beat in enumerate(beats):
         if not isinstance(beat, dict):
             raise CanonicalSceneError('연출 구간은 JSON 객체여야 합니다.')
+        camera = beat.get('camera')
+        if isinstance(camera, dict):
+            aliases = {'movement': {'static':'locked', 'fixed':'locked', 'tracking':'track',
+                                    'orbiting':'orbit', 'panning':'pan', 'push_in':'push'},
+                       'framing': {'close_up':'close', 'closeup':'close', 'medium_shot':'medium',
+                                   'wide_shot':'wide', 'full_shot':'full'},
+                       'transition': {'hard_cut':'cut', 'smooth':'continuous'}}
+            for key, spec in CAMERA['properties'].items():
+                before = camera.get(key)
+                if isinstance(before, str) and 'enum' in spec:
+                    token = re.sub(r'[\s-]+', '_', before.strip().casefold())
+                    after = aliases.get(key, {}).get(token, token)
+                    if after in spec['enum'] and after != before:
+                        camera[key] = after
+                        changes.append({'path':f'beats[{index}].camera.{key}', 'before':before,
+                                        'after':after, 'allowedValues':spec['enum'][:], 'reason':'camera_alias'})
         actions = beat.get('actions', [])
         if not isinstance(actions, list):
             raise CanonicalSceneError(f'beats[{index}].actions는 배열이어야 합니다.')

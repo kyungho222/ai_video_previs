@@ -4,6 +4,7 @@ import asyncio
 from io import BytesIO
 import ipaddress
 import json
+import logging
 import math
 from pathlib import Path
 import re
@@ -51,16 +52,7 @@ class PublicNetworkBackend(httpcore.AsyncNetworkBackend):
         self.backend = httpcore.AnyIOBackend()
 
     async def connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):
-        try:
-            addresses = await asyncio.to_thread(
-                socket.getaddrinfo, host, port, type=socket.SOCK_STREAM
-            )
-            if not addresses or any(
-                not ipaddress.ip_address(row[4][0]).is_global for row in addresses
-            ):
-                raise ValueError()
-        except (ValueError, OSError):
-            raise VideoError("공개 IP가 아닌 영상 저장소 연결을 차단했습니다.") from None
+        addresses = await _public_addresses(host,port)
         return await self.backend.connect_tcp(
             addresses[0][4][0],
             port,
@@ -86,8 +78,26 @@ class PublicHTTPTransport(httpx.AsyncHTTPTransport):
 
 
 
+async def _public_addresses(host,port):
+    try:
+        addresses=await asyncio.to_thread(socket.getaddrinfo,host,port,type=socket.SOCK_STREAM)
+    except OSError as error:
+        raise VideoError(f'영상 저장소 DNS 조회 실패 · host={host} · errno={error.errno}',status_code=503) from None
+    if not addresses:
+        raise VideoError(f'영상 저장소 DNS 응답이 비어 있습니다 · host={host}',status_code=503)
+    try:
+        public=all(ipaddress.ip_address(row[4][0]).is_global for row in addresses)
+    except ValueError:
+        public=False
+    if not public:
+        raise VideoError(f'공개 IP가 아닌 영상 저장소 연결을 차단했습니다 · host={host}',status_code=400)
+    return addresses
+
+
 async def public_https(url):
     try:
+        if not isinstance(url,str) or any(ord(ch)<32 or ord(ch)==127 for ch in url):
+            raise ValueError()
         parsed = urlparse(url)
         if (
             parsed.scheme != "https"
@@ -97,13 +107,9 @@ async def public_https(url):
             or parsed.port not in (None, 443)
         ):
             raise ValueError()
-        addresses = await asyncio.to_thread(
-            socket.getaddrinfo, parsed.hostname, 443, type=socket.SOCK_STREAM
-        )
-        if not addresses or any(not ipaddress.ip_address(row[4][0]).is_global for row in addresses):
-            raise ValueError()
-    except (OSError, ValueError):
-        raise VideoError("영상 주소는 외부에서 접근 가능한 HTTPS 주소여야 합니다.") from None
+    except (ValueError,TypeError):
+        raise VideoError('영상 주소 형식 오류: HTTPS·443 포트·인증정보 없는 주소가 필요합니다.',status_code=400) from None
+    await _public_addresses(parsed.hostname,443)
     return parsed
 
 
@@ -151,6 +157,8 @@ class VideoAssets:
         self.max_images = max_images
 
     def save(self, content, role, name, *, source_object_id=None, label=None, appearance=None):
+        from .asset_roles import canonical_asset_role
+        role=canonical_asset_role(role)
         extras = {}
         for key, value, limit in (('sourceObjectId', source_object_id, 256),
                                   ('label', label, 120), ('appearance', appearance, 1000)):
@@ -164,7 +172,7 @@ class VideoAssets:
                 raise AssetError('음원에는 객체 연결 정보를 지정할 수 없습니다.')
             return self.save_audio(content, name)
         if role not in ROLES:
-            raise AssetError("에셋 유형은 캐릭터, 배경, 기타, 음원 중에서 선택하세요.")
+            raise AssetError("에셋 유형은 배경, 캐릭터, 사물, 음원 중에서 선택하세요.")
         if not content or len(content) > MAX_IMAGE_BYTES:
             raise AssetError("이미지 파일은 20MB 이하여야 합니다.")
         try:
@@ -185,7 +193,8 @@ class VideoAssets:
             raise AssetError("유효한 이미지 파일을 읽을 수 없습니다.") from None
         extension = {"JPEG": ".jpg", "PNG": ".png", "WEBP": ".webp", "BMP": ".bmp"}[image_format]
         return self.write_asset(content, role, name, extension, Image.MIME[image_format],
-                                width=width, height=height, **extras)
+                                width=width, height=height,
+                                **({'characterLayout':'single'} if role=='character' else {}), **extras)
 
     def save_audio(self, content, name):
         extension = Path(name or "").suffix.lower()
@@ -230,7 +239,11 @@ class VideoAssets:
             data = json.loads(metadata.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             raise AssetError("에셋 정보를 읽을 수 없습니다.") from None
-        role = data.get("role")
+        from .asset_roles import canonical_asset_role
+        role = canonical_asset_role(data.get("role"))
+        data['role']=role
+        if role=='character':
+            data['characterLayout']='single'
         if data.get("id") != asset_id or (role not in ROLES and role != "audio"):
             raise AssetError("에셋 정보가 올바르지 않습니다.")
         extension = data.get("extension", ".jpg")
@@ -457,7 +470,19 @@ def create_previs_upload_router(previs, *, api_prefix=None):
 async def download_video(
     url, target, *, headers=None, max_bytes=MAX_REFERENCE_BYTES, transport=None
 ):
-    await public_https(url)
+    try:
+        await public_https(url)
+    except VideoError as error:
+        try:
+            parsed=urlparse(url)
+            scheme=re.sub(r'[^a-zA-Z0-9+-]','?',parsed.scheme)[:20]
+            host=re.sub(r'[^a-zA-Z0-9.:-]','?',parsed.hostname or '')[:253]
+        except (ValueError,TypeError,AttributeError):
+            scheme,host='invalid','invalid'
+        logging.getLogger('uvicorn.error').warning(
+            '[video-download] 결과 주소 검증 실패 · scheme=%s host=%s status=%s · %s',
+            scheme,host,error.status_code,str(error))
+        raise
     partial = Path(str(target) + ".part")
     try:
         async with httpx.AsyncClient(

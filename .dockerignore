@@ -32,3 +32,5 @@
 **/local-state/
 /ai_video/refactor_whoami_final/
 /ai_video/temp_assets/
+/job-transfer-*/
+/job-transfer-*.zip

@@ -58,6 +58,14 @@ class UsageHistory:
             db.execute('INSERT INTO history_jobs VALUES(?,?,?) ON CONFLICT(job_id) DO UPDATE SET data=excluded.data',
                        (identifier,json.dumps(redact(record),ensure_ascii=False),created or time.time()))
 
+    def latest_completed_session_job(self, session_id):
+        """Recover revision provenance after process-local state is lost."""
+        with self.db() as db:
+            row=db.execute("SELECT job_id FROM history_jobs WHERE json_extract(data,'$.sessionId')=? "
+                           "AND json_extract(data,'$.state')='completed' ORDER BY created DESC LIMIT 1",
+                           (session_id,)).fetchone()
+        return row['job_id'] if row else None
+
     def record_usage(self, job_id, row):
         if not isinstance(row, dict) or not isinstance(row.get('id'),str):
             return

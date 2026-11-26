@@ -13,6 +13,7 @@
 
 
 .chat-model-label{display:flex;flex-direction:column;gap:4px;color:#b8c9e1;font-size:12px;white-space:nowrap}.chat-model-label select{font-size:13px}
+.chat-actions{flex-wrap:wrap;min-width:0;max-width:100%}.chat-actions select{flex:1 1 220px;min-width:0;font-size:13px}
 
 /* Keep connection and queue information in one compact toolbar. */
 header{padding:12px 20px;flex-shrink:0}
@@ -268,7 +269,7 @@ const getWorkSettings = (modelId = 'sf-model') => ({
 const previs = initPrevis({request, apiUrl, renderVideoValidation,
   getWorkSettings: () => getWorkSettings('chat-model')});
 initShortform({request, getWorkSettings, ...previs});
-const activateHistory = initUsageHistory({request, apiUrl});
+const activateHistory = initUsageHistory({request, apiUrl, openHistoryJob:previs.openHistoryJob, openVideoJob:previs.openVideoJob});
 if (['localhost', '127.0.0.1', '[::1]', '::1'].includes(location.hostname)) {
   $('usage-db-control').hidden = false;
   const usageDbStorageKey = 'previs-console-usage-db-enabled';

@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import math
+import logging
 from pathlib import Path
 
 from .spatial_guides import image_data_url, read_json_response, sample_frames
@@ -12,7 +13,7 @@ from .video_errors import PromptLengthError
 from .scene_flow import FIRST_SCENE_CONTINUITY, SCENE_FLOW_RULES
 from .review_images import pack_review_images
 
-VALIDATION_VERSION = "video-validation-v8-bounded-images"
+VALIDATION_VERSION = "video-validation-v9-deduplicated-input"
 INPUT_REVIEW_LIMIT = 1
 CHECK_NAMES = ("cast", "identity", "anatomy", "motion", "staging", "camera")
 
@@ -127,6 +128,19 @@ def remove_samples(directory, subdirectories):
                 pass
 
 
+def additional_review_context(value, prompt):
+    """Keep extra facts only; the complete generation prompt is sent once."""
+    if isinstance(value, dict):
+        return {key: compact for key, item in value.items()
+                if not (key in {'appearance', 'description', 'voice_description', 'cameraSummary', 'text'}
+                        and isinstance(item, str) and item and item in prompt)
+                if (compact := additional_review_context(item, prompt)) not in (None, {}, [])}
+    if isinstance(value, list):
+        return [compact for item in value
+                if (compact := additional_review_context(item, prompt)) not in (None, {}, [])]
+    return value
+
+
 async def validate_video_request(
     request,
     *,
@@ -155,16 +169,15 @@ async def validate_video_request(
     fixed_sections = (*fixed_sections, CONTINUITY_RULES, SPEECH_LANGUAGE_RULES)
     fixed_rules = "\n\n".join(fixed_sections)
     context = {
-        "referenceRules": fixed_rules if reference is not None else "",
-        "continuityRules": CONTINUITY_RULES,
-        "speechLanguageRules": SPEECH_LANGUAGE_RULES,
-        "characterDirection": character_direction,
-        "currentUserRequest": user_prompt,
-        "originalConcept": scene_prompt,
+        "referenceRules": "\n\n".join(section for section in fixed_sections if section not in prompt)
+                          if reference is not None else "",
+        "characterDirection": additional_review_context(character_direction, prompt),
+        "currentUserRequest": user_prompt if user_prompt not in prompt else "See generationPrompt (included).",
+        "originalConcept": scene_prompt if scene_prompt not in prompt else "See generationPrompt (included).",
         "generationPrompt": prompt,
         "actualImages": image_context(images),
         "previsVideoSent": reference is not None,
-        "mapping": guide_context,
+        "mapping": additional_review_context(guide_context, prompt),
         "promptLimit": prompt_limit,
     }
     fingerprint = hashlib.sha256(json.dumps(context, sort_keys=True).encode()).hexdigest()
@@ -185,6 +198,7 @@ async def validate_video_request(
         "resolvedPrompt": prompt,
         "assetMappings": [],
         "issues": [],
+        "policy": "review_once_keep_existing_prompt",
     }
     if request is None:
         report["summary"] = "입력 검증용 AI 연결이 설정되지 않았습니다."
@@ -304,6 +318,9 @@ async def validate_video_request(
         )
     finally:
         remove_samples(directory, ("input",))
+    logging.getLogger('uvicorn.error').info('[video-input-review] %s', json.dumps({
+        'status': report['status'], 'issues': report['issues'], 'error': report.get('error'),
+        'attemptCount': len(report['attempts']), 'action': 'continue_with_existing_prompt'}, ensure_ascii=False))
     return current_prompt, report
 
 

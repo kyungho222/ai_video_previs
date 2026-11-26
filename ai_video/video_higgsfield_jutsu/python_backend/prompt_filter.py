@@ -205,6 +205,23 @@ def admission_object(response, stage):
     return value
 
 
+def inspection_connection_diagnostic(error, stage):
+    """Bounded connection provenance; exclude bodies, headers, paths and signed queries."""
+    host=None
+    try:
+        host=error.request.url.host
+    except (AttributeError,RuntimeError):
+        pass
+    causes=[]; seen=set(); code=None
+    current=error
+    while current is not None and id(current) not in seen and len(causes)<6:
+        seen.add(id(current)); causes.append(type(current).__name__)
+        if type(getattr(current,'errno',None)) is int:
+            code=current.errno
+        current=current.__cause__ or current.__context__
+    return {'stage':stage,'host':host,'causes':causes,'errno':code}
+
+
 async def filter_user_prompts(*texts, model, api_key=None, transport=None, request=None, cached=None,
                               usage_sink=None, allow_fallback=True, combined=False):
     """Reject prohibited text before generation; inspection errors remain retryable."""
@@ -383,6 +400,14 @@ async def filter_user_prompts(*texts, model, api_key=None, transport=None, reque
         logging.getLogger('uvicorn.error').info('[prompt-filter] blocked grade=3 categories=%s', ','.join(blocked))
         raise PromptFilterError(blocked)
     if errors:
+        branches=[('scene_admission' if combined else 'prompt_injection_admission',inspection),
+                  ('moderation',moderated)]
+        if not combined:
+            branches.append(('content_rating_admission',graded))
+        for stage,error in branches:
+            if isinstance(error,BaseException):
+                logging.getLogger('uvicorn.error').warning('[prompt-filter] 검사 연결·응답 실패 · %s',
+                    json.dumps(inspection_connection_diagnostic(error,stage),ensure_ascii=False))
         logging.getLogger('uvicorn.error').warning('[prompt-filter] inspection unavailable (%s)', type(errors[0]).__name__)
         raise PromptFilterError(unavailable=True)
     rating['overall'] = max(rating['sexual'], rating['violence'])

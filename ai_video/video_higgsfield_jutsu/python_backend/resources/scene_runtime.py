@@ -379,11 +379,11 @@ def _scene_build_camera(scene, rigs, plan):
         camera_samples.append({'frame': frame, 'shot': index, 'movement': setup['movement'],
                                'transitioning': blend < 1 or (setup.get('transition', 'continuous') != 'cut' and elapsed < .9), 'focus': setup['focus'], 'framing': setup['framing'],
                                'position': list(position), 'target': list(target), 'supportTop': support_floor})
-    actor_ids = {s['id'] for s in plan['subjects'] if s['kind'] != 'prop'}
+    primary_ids = set(scene_visibility_roles(plan)['primary'])
     intervals = []
     for s in plan['scenes']:
         focus_ids = set(s['camera']['focus'])
-        subjects = [rigs[key]['root'].name for key in sorted((actor_ids & focus_ids) or focus_ids)]
+        subjects = [rigs[key]['root'].name for key in sorted((primary_ids & focus_ids) or focus_ids)]
         intervals.append({'start': round(s['start'] * 24) + 1, 'end': round(s['end'] * 24), 'subjects': subjects})
     # Furniture/wall props must remain occluders, not be exempted as actor geometry.
     camera['previs_framing_subjects'] = json.dumps(sorted({key for s in intervals for key in s['subjects']}))
@@ -393,6 +393,90 @@ def _scene_build_camera(scene, rigs, plan):
     camera['previs_projection_warnings'] = json.dumps(projection_warnings)
     _pv_linear([camera])
     return camera_samples
+
+
+def _scene_secondary_visibility(scene, rigs, plan, before):
+    import bpy
+    names={}
+    for ident,rig in rigs.items():
+        for obj in [rig['root'], *rig['root'].children_recursive]:
+            names[obj.name]=ident
+    fps=scene.render.fps / getattr(scene.render,'fps_base',1)
+    candidates=secondary_occlusion_candidates(plan,before,fps,names)
+    report={'roles':scene_visibility_roles(plan),'candidates':candidates,'hidden':[],
+            'phase':'after_geometry_and_placement_correction','rechecked':False,
+            'policy':{'minimumBodyOcclusionSeconds':.5,'frequentFrameRatio':.3,
+                      'sustainedSeconds':1,'sustainedMinimumRatio':.1}}
+    if not candidates:
+        return before,report
+    previous=[]
+    try:
+        for row in candidates:
+            root=rigs[row['id']]['root']
+            for obj in [root,*root.children_recursive]:
+                previous.append((obj,obj.hide_render))
+                obj.hide_render=True
+        bpy.context.view_layer.update()
+        after=previs_validate_visibility({})
+        report['rechecked']=True
+        primary=set(report['roles']['primary'])
+        def blocked(value):
+            return sum(row.get('blockedBodyFrames',0) for row in value.get('subjects',[])
+                       if names.get(row.get('subject'),row.get('subject')) in primary)
+        report.update(blockedFramesBefore=blocked(before),blockedFramesAfter=blocked(after))
+        if blocked(after)<blocked(before):
+            report['hidden']=[row['id'] for row in candidates]
+            return after,report
+        report['reason']='no_primary_visibility_improvement'
+    except Exception as error:
+        report['reason']='visibility_recheck_failed'
+        report['errorType']=type(error).__name__
+    for obj,hidden in previous:
+        obj.hide_render=hidden
+    bpy.context.view_layer.update()
+    # Restore the quality-check state as well as render flags after rollback.
+    return previs_validate_visibility({}),report
+
+
+def _scene_capture_composition(scene, rigs, plan):
+    """Measure final keyed geometry; projected presence is not occlusion visibility."""
+    import bpy
+    from bpy_extras.object_utils import world_to_camera_view
+    samples = []
+    old_frame = scene.frame_current
+    try:
+        for index, shot in enumerate(plan['scenes']):
+            first = max(scene.frame_start, int(shot['start'] * 24) + 1)
+            last = min(scene.frame_end, int(_scene_math.ceil(shot['end'] * 24)))
+            for frame in sorted({first, (first + last) // 2, last}):
+                scene.frame_set(frame)
+                bpy.context.view_layer.update()
+                camera = scene.camera
+                objects = []
+                for ident, rig in rigs.items():
+                    if all(obj.hide_render for obj in rig['parts'].values()):
+                        objects.append({'id':ident,'center':None,'bbox':None,'inFront':None,
+                                        'intersectsFrame':False,'rendered':False})
+                        continue
+                    points = _scene_bounds([rig['root']], scene, 'full')
+                    projected = [world_to_camera_view(scene, camera, point) for point in points]
+                    front = bool(projected) and all(p.z > camera.data.clip_start for p in projected)
+                    box = ([min(p.x for p in projected), 1 - max(p.y for p in projected),
+                            max(p.x for p in projected), 1 - min(p.y for p in projected)] if front else None)
+                    objects.append({'id':ident, 'center':[round((box[0]+box[2])/2,4),round((box[1]+box[3])/2,4)] if box else None,
+                        'bbox':[round(float(v),4) for v in box] if box else None,
+                        'inFront':front, 'intersectsFrame':bool(box and box[2]>0 and box[0]<1 and box[3]>0 and box[1]<1), 'rendered':True,
+                        'worldPosition':[round(float(v),4) for v in rig['root'].matrix_world.translation],
+                        'worldYaw':round(_scene_math.degrees(rig['root'].matrix_world.to_euler().z),3)})
+                samples.append({'frame':frame, 'time':round((frame-1)/24,6), 'shot':index,
+                    'camera':{'position':[round(float(v),4) for v in camera.matrix_world.translation],
+                              'rotation':[round(float(v),4) for v in camera.matrix_world.to_euler()],
+                              'lens':float(camera.data.lens)}, 'subjects':objects})
+    finally:
+        scene.frame_set(old_frame)
+    return {'version':1, 'source':'evaluated_blender_geometry',
+            'coordinates':'viewer_screen_xy_top_left; offscreen values are not clamped',
+            'visibility':'projection_only; occlusion_unknown', 'samples':samples}
 
 
 def build_declarative_scene(plan, duration, aspect):
@@ -535,6 +619,8 @@ def build_declarative_scene(plan, duration, aspect):
         for ident in camera_targets:
             _pv_linear([rigs[ident]['root'], *rigs[ident]['parts'].values()])
     visibility = previs_validate_visibility({})
+    visibility, visibility_fallback = _scene_secondary_visibility(scene, rigs, plan, visibility)
+    screen_composition = _scene_capture_composition(scene, rigs, plan)
     scene.frame_set(1)
     final_positions = world_positions()
     object_positions = {key: {'rootName': rig['root'].name, 'created': created_positions[key],
@@ -551,6 +637,8 @@ def build_declarative_scene(plan, duration, aspect):
         'visibility': visibility, 'camera': {'passed': quality['status'] == 'matched', 'issues': quality['issues']},
         'framingChecked': True, 'frames': len(samples)},
         'serverCorrection': {'objectPositions': object_positions, 'cameraQuality': quality, 'cameraMotionWarnings': json.loads(scene.camera['previs_motion_warnings']),
+                             'screenComposition': screen_composition,
+                             'secondaryVisibility': visibility_fallback,
                              'facingDiagnostics': facing_diagnostics,
                              'pointingDiagnostics': {key:rig.get('pointingDiagnostics', []) for key,rig in rigs.items() if rig.get('pointingDiagnostics')},
                              'cameraSamples': samples,

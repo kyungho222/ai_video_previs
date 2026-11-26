@@ -62,14 +62,17 @@ def sample_track(plan, subject_id, time):
     if not any('channel' in t for t in tracks):
         return _sample_single_track(plan, subject_id, time)
     root_tracks = [t for t in tracks if t.get('channel') in ('movement', 'posture')]
-    if not root_tracks:
-        root_tracks = [t for t in tracks if t.get('channel') in ('gesture', 'vocal')]
+    # Upper-body gestures and speech never own translation or root heading.
+    # With no root channel, sample the authored initial transform unchanged.
     primary = _sample_single_track({**plan, 'tracks': root_tracks}, subject_id, time)
     for channel in ('gesture', 'vocal'):
-        active = [t for t in tracks if t.get('channel') == channel and t['start'] <= time < t['end']]
-        if active:
-            track = active[0]
-            sample = _sample_single_track({**plan, 'tracks': [track]}, subject_id, time)
+        channel_tracks = [t for t in tracks if t.get('channel') == channel]
+        active = [t for t in channel_tracks if t['start'] <= time < t['end']]
+        if channel_tracks and time >= channel_tracks[0]['start']:
+            sample = _sample_single_track({**plan, 'tracks': channel_tracks}, subject_id, time)
+            persistent = channel == 'gesture' and sample['action'] in ('hold', 'raise_hand', 'hand_heart', 'arms_up', 'point', 'reach')
+            if not active and not persistent:
+                continue
             primary[channel + '_action'] = sample['action']
             primary[channel + '_phase'] = sample['phase']
             primary[channel + '_seconds'] = sample['seconds']

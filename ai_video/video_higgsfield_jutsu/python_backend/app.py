@@ -430,6 +430,17 @@ def create_api_router(*, root=DEFAULT_ROOT, python_client=None, agent=None, tran
                 )
             )
             baseline_prompt = service.store.prompt_context(session_id, new_scene=new_scene)
+            revision_base=None
+            revision_source=body.get('sourceJobId')
+            if not revision_source and session_id and not baseline_prompt and not new_scene:
+                previous_source=service.usage_history.latest_completed_session_job(session_id)
+                if isinstance(previous_source,str):
+                    revision_source=previous_source
+            if revision_source and not new_scene:
+                from .scene_revision import resolve_revision_baseline
+                revision_base=resolve_revision_baseline(service,revision_source,session_id)
+                session_id=session_id or revision_base.get('sessionId')
+                baseline_prompt=revision_base.get('scenePrompt') or baseline_prompt
             pipeline_logger.info("[요청 %s] 프리비즈 프롬프트 검사 시작", request.state.pipeline_id)
             prompt_filter = await filter_user_prompts(
                 baseline_prompt, message, model=model, api_key=service.config.get("OPENAI_API_KEY"),
@@ -438,11 +449,13 @@ def create_api_router(*, root=DEFAULT_ROOT, python_client=None, agent=None, tran
             # The scenario is already in the completed baseline; persist only the
             # new correction so it stays distinct and receives priority.
             store_message = (revision_instruction(scenario_prompt(scenario), message)
-                             if scenario is not None and baseline_prompt and requirements else message)
+                             if scenario is not None and baseline_prompt and requirements else
+                             revision_instruction(baseline_prompt,message) if baseline_prompt else message)
             job, session, history = service.store.create(
                 store_message, session_id, duration, aspect, new_scene=new_scene,
                 **({"scenario_titles": scenario_titles} if scenario_titles else {}),
                 **({"work_settings": {"model": model, **work_metadata}} if work_metadata else {}),
+                baseline=revision_base,
             )
         except PromptFilterError as error:
             raise HTTPException(error.status_code, detail=str(error)) from None
@@ -488,6 +501,18 @@ def create_api_router(*, root=DEFAULT_ROOT, python_client=None, agent=None, tran
         if not re.fullmatch(UUID, session_id):
             raise HTTPException(400, detail="세션 ID 형식이 올바르지 않습니다.")
         return {"versions": service.store.versions(session_id)}
+
+    @router.get('/api/jobs/{job_id}/revision-context')
+    async def revision_context(job_id: str):
+        from .scene_revision import resolve_revision_baseline
+        try:
+            baseline=resolve_revision_baseline(service,job_id)
+        except ValueError as error:
+            raise HTTPException(409,detail=str(error)) from None
+        return {'sourceJobId':baseline['id'], 'sessionId':baseline.get('sessionId'),
+                'sceneId':baseline.get('sceneId'), 'version':baseline.get('version'),
+                'scenePrompt':baseline.get('scenePrompt'), 'scenarioTitles':baseline.get('scenarioTitles'),
+                'duration':baseline.get('duration'), 'aspect':baseline.get('aspect')}
 
     @router.get("/api/jobs/{job_id}/source")
     async def version_source(job_id: str):

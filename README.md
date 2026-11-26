@@ -167,7 +167,7 @@ SQLite 운영 저장소와 로컬 JSON 저장소가 같은 API를 지원합니�
 
 | 하위 폴더 | 저장 내용 | 서버 폴더 |
 | --- | --- | --- |
-| `data` | 영상 작업·캐릭터 등록 DB `wan-jobs.sqlite3`, 파일 등록 DB `media-archive.sqlite3`, 업로드 에셋 `wan-assets/` | `ai_video/runtime/data` |
+| `data` | 영상 작업·캐릭터 등록 DB `wan-jobs.sqlite3`, 파일 등록 DB `media-archive.sqlite3`, 에셋–객체 연결 DB `asset-object-bindings.sqlite3`, 업로드 에셋 `wan-assets/` | `ai_video/runtime/data` |
 | `archive` | 프리비즈 보관 파일과 콘솔 History DB `usage-history.sqlite3` | `ai_video/runtime/archive` |
 | `recovered` | 복구된 프리비즈 결과와 메타데이터 | `ai_video/runtime/recovered` |
 | `wan` | 최종 영상, 씬 스냅샷, 가이드 이미지 | `ai_video/runtime/wan` |

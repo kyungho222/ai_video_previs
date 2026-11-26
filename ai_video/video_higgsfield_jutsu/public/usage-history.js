@@ -1,4 +1,4 @@
-export function initUsageHistory({request, apiUrl}) {
+export function initUsageHistory({request, apiUrl, openHistoryJob, openVideoJob}) {
   const historyPanel = document.getElementById('usage-history-panel');
   const records = document.getElementById('usage-history-records');
   const status = document.getElementById('usage-history-status');
@@ -104,6 +104,12 @@ export function initUsageHistory({request, apiUrl}) {
     heading.append(selection, element('h2', 'Job ' + item.jobId));
     const date = new Date(item.createdAt * 1000).toLocaleString('ko-KR');
     heading.append(element('span', date + ' · ' + (stateLabels[item.state] || item.state)));
+    if (openHistoryJob) {
+      const open = element('button','프리비즈 탭에서 불러오기');
+      open.type = 'button';
+      open.onclick = () => Promise.resolve(openHistoryJob(item)).catch(error => { status.textContent = error.message; });
+      heading.append(open);
+    }
     const grid = element('div', undefined, 'usage-history-grid');
     const previs = element('section');
     previs.append(element('h3', '프리비즈'));
@@ -162,6 +168,12 @@ export function initUsageHistory({request, apiUrl}) {
     for (const job of completedVideos) {
       generated.append(element('p', '영상 Job ' + job.id, 'usage-history-video-id'));
       generated.append(element('span', stateLabels[job.state] || job.state));
+      if (openVideoJob) {
+        const open = element('button','영상 작업 불러오기');
+        open.type = 'button';
+        open.onclick = () => Promise.resolve(openVideoJob(job)).catch(error => { status.textContent = error.message; });
+        generated.append(open);
+      }
       if (job.videoUrl) {
         generated.append(video(job.videoUrl, '생성 영상 ' + job.id));
         if (job.expiresAt === null) generated.append(element('small', '영구 보관'));

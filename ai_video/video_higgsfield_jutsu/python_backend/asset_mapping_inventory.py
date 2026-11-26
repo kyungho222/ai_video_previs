@@ -5,7 +5,26 @@ import json
 import math
 
 
+def attach_environment_references(mapping, assets):
+    """Background registration never depends on a guessed foreground bounding box."""
+    result=deepcopy(mapping)
+    if not isinstance(result,dict) or not isinstance(result.get('entities'),list):
+        return result
+    covered={i for e in result['entities'] if isinstance(e,dict) and isinstance(e.get('assetIndices'),list)
+             for i in e['assetIndices'] if type(i) is int}
+    refs=[]
+    for index,asset in enumerate(assets,1):
+        if index in covered or asset.get('role') not in ('background','environment'):
+            continue
+        refs.append({'assetIndex':index,'assetId':str(asset.get('id') or asset.get('assetId') or f'input-{index}'),
+                     'sourceIndex':asset.get('sourceIndex',index),'role':asset['role'],
+                     'targetType':'environment','spatialStatus':'unresolved','bbox':None,'visible':None})
+    result['environmentReferences']=refs
+    return result
+
+
 def build_asset_inventory(assets):
+    from .asset_roles import canonical_asset_role
     inventory = []
     roles = {'character': 'character', 'object': 'object', 'prop': 'object',
              'background': 'background', 'environment': 'environment', 'other': 'other'}
@@ -13,7 +32,7 @@ def build_asset_inventory(assets):
         original_id = asset.get('id') or asset.get('assetId') or f'input-{index}'
         part = {'sourceIndex': asset.get('sourceIndex'), 'bbox': asset.get('bbox'), 'index': index}
         suffix = hashlib.sha256(json.dumps(part, sort_keys=True).encode()).hexdigest()[:12]
-        category = roles.get(asset.get('role'), 'unknown')
+        category = roles.get(canonical_asset_role(asset.get('role')), 'unknown')
         inventory.append({'index': index, 'inventoryId': str(original_id) + ':' + suffix,
                           'assetId': str(original_id), 'sourceIndex': asset.get('sourceIndex', index),
                           'category': category,
@@ -45,6 +64,8 @@ def assess_asset_inventory(inventory, mapping, frames, scene_manifest=None):
                    and asset['index'] in e['assetIndices']]
         row.update(linkStatus='unresolved', linkSource=None, entityId=None, objectIds=[],
                    nativeObjectStatus='unresolved', frames=[])
+        environment_ref=next((r for r in mapping.get('environmentReferences',[]) if isinstance(r,dict)
+                              and r.get('assetIndex')==asset['index']),None) if isinstance(mapping,dict) else None
         if len(matches) > 1:
             row['linkStatus'] = 'conflict'
         elif len(matches) == 1 and isinstance(matches[0].get('id'), str) and matches[0]['id']:
@@ -58,8 +79,10 @@ def assess_asset_inventory(inventory, mapping, frames, scene_manifest=None):
                 uncertain = (type(confidence) not in (int, float) or not math.isfinite(confidence)
                              or not 0 <= confidence <= 1 or
                              (confidence < .65 and any(isinstance(v, dict) and v.get('visible') is True for v in observations)))
-                row.update(linkStatus='unresolved' if uncertain else 'linked', linkSource='model', entityId=entity['id'],
+                row.update(linkStatus='unresolved' if uncertain else 'linked', linkSource='confirmed_binding' if entity.get('frameSource')=='blender' else 'model', entityId=entity['id'],
                            objectIds=deepcopy(source_ids or []))
+        elif environment_ref and asset['category'] in ('background','environment'):
+            row.update(linkStatus='linked',linkSource='registered_environment_reference',entityId='scene_environment')
         elif asset.get('explicitObjectId') in known:
             row.update(linkStatus='linked', linkSource='explicit_native_id', objectIds=[asset['explicitObjectId']])
         elif (not matches and asset['category'] in ('background', 'environment')
@@ -76,7 +99,7 @@ def assess_asset_inventory(inventory, mapping, frames, scene_manifest=None):
             valid = len(observations) == 1 and _sample_valid(observations[0])
             frame_result = {'index': index, 'visible': observations[0]['visible'] if valid else None,
                             'bbox': deepcopy(observations[0]['bbox']) if valid else None,
-                            'source': 'model' if valid else None}
+                            'source': ('blender' if entity.get('frameSource')=='blender' else 'model') if valid else None}
             time = frame.get('time')
             native_frames = (scene_manifest or {}).get('frames', [])
             matching = [f for f in native_frames if isinstance(f, dict) and type(time) in (int, float)

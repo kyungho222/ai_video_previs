@@ -110,11 +110,32 @@ def validate_timeline(value, duration):
     return value
 
 
+def _timed_rendered_field(segment, name, scale):
+    text = segment[name]
+    if scale == 1 or name not in ('movement','staging'):
+        return text
+    try:
+        value = json.loads(text)
+    except (ValueError,TypeError):
+        return text
+    if not isinstance(value,dict) or not any(key in value for key in ('rendered_camera','viewer_screen')):
+        return text
+    for key in ('rendered_camera','viewer_screen','actions'):
+        for row in value.get(key,[]):
+            for field in ('time','start','end'):
+                if type(row.get(field)) in (int,float):
+                    row[field]=round(row[field]*scale,6)
+    return json.dumps(value,ensure_ascii=False,separators=(',',':'))
+
+
 def timeline_prompt(plan, source_duration, output_duration, *, scene_flow_policy=None):
     scale = output_duration / source_duration
     lines = ['CAMERA AND STAGING TIMELINE',
              'first_frame fixes the opening; final composition is text only. Preserve timed camera/root paths and event order.',
              'Scene: ' + plan['summary'], 'Entities: ' + ' | '.join(plan['entities'])]
+    if any('viewer_screen' in segment.get('staging','') for segment in plan['segments']):
+        lines.insert(2, 'Measured viewer_screen and rendered_camera describe the actual rendered previs and override conflicting authored coordinates. '
+                     'Screen-left/right is the viewer perspective, never the actor anatomical side. Preserve measured order changes only through the recorded camera/action path; never mirror the scene.')
     continuous = scene_flow_policy == FIRST_SCENE_CONTINUITY
     if continuous:
         lines[1] = SCENE_FLOW_RULES
@@ -122,7 +143,7 @@ def timeline_prompt(plan, source_duration, output_duration, *, scene_flow_policy
         if continuous:
             lines.append('OPENING STATE ANCHOR' if index == 0 else 'LATER SCENE INTENT REFERENCE; inherit previous actual end state')
         lines.append(f"{segment['start'] * scale:.3f}–{segment['end'] * scale:.3f}s " +
-                     ' | '.join(name + '=' + segment[name] for name in SEGMENT_FIELDS))
+                     ' | '.join(name + '=' + _timed_rendered_field(segment,name,scale) for name in SEGMENT_FIELDS))
         for key in ('startPhysicalState', 'endPhysicalState'):
             if segment.get(key) and 'unrecorded contact state is unknown' not in segment[key]:
                 if continuous and (index > 0 or key == 'endPhysicalState'):
@@ -187,6 +208,8 @@ async def compact_timeline(plan, source_duration, output_duration, *, request, m
                 'instructions': 'Condense the supplied camera/staging analysis without changing its meaning. '
                     'Keep every camera movement, direction, viewpoint, framing, target, speed progression, '
                     'root placement/path, physical boundary state, interaction, shot transition and final composition. '
+                    'Preserve measured viewer_screen side/order and pointing directions, and rendered_camera motion. '
+                    'These measured values override conflicting authored positions; never swap viewer sides or anatomical sides. '
                     'Keep entity strings and all segment start/end and critical-moment times exactly. '
                     'Keep the same segment and critical-moment counts and order. Shorten repetitive prose and '
                     'repeated uncertainties. Do not invent facts, merge intervals or remove actions or speakers. '
